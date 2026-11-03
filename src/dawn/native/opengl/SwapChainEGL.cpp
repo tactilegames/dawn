@@ -53,7 +53,22 @@ ResultOrError<Ref<SwapChainEGL>> SwapChainEGL::Create(Device* device,
 SwapChainEGL::SwapChainEGL(DeviceBase* dev, Surface* sur, const SurfaceConfiguration* config)
     : SwapChainBase(dev, sur, config) {}
 
-SwapChainEGL::~SwapChainEGL() = default;
+SwapChainEGL::~SwapChainEGL() {
+    // DetachFromSurfaceImpl, or Initialize when it fails, deletes or hands over the framebuffer.
+    DAWN_ASSERT(mBlitFbo == 0);
+}
+
+void SwapChainEGL::DeleteBlitFramebuffer() {
+    if (mBlitFbo == 0) {
+        return;
+    }
+    GLuint fbo = mBlitFbo;
+    mBlitFbo = 0;
+    IgnoreErrors(ToBackend(GetDevice())->EnqueueGL([fbo](const OpenGLFunctions& gl) -> MaybeError {
+        DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteFramebuffers(1, &fbo));
+        return {};
+    }));
+}
 
 MaybeError SwapChainEGL::Initialize(SwapChainBase* previousSwapChain) {
     const Device* device = ToBackend(GetDevice());
@@ -81,14 +96,27 @@ MaybeError SwapChainEGL::Initialize(SwapChainBase* previousSwapChain) {
             std::swap(previousEGLSwapChain->mEGLSurface, mEGLSurface);
         }
 
+        // Framebuffers are not shared between GL contexts, so only a swapchain of the same device
+        // can take over the blit framebuffer; deleting it could block (see PresentImpl).
+        if (previousSwapChain->GetDevice() == GetDevice()) {
+            SwapChainEGL* previousEGLSwapChain =
+                reinterpret_cast<SwapChainEGL*>(ToBackend(previousSwapChain));
+            std::swap(previousEGLSwapChain->mBlitFbo, mBlitFbo);
+        }
+
         previousSwapChain->DetachFromSurface();
     }
 
     const DisplayEGL* display = ToBackend(device->GetPhysicalDevice())->GetDisplay();
 
-    // Create the EGLSurface if needed.
+    // Create the EGLSurface if needed. A swapchain that fails here is never attached, so
+    // DetachFromSurfaceImpl will not run for it: delete a framebuffer it took over.
     if (mEGLSurface == EGL_NO_SURFACE) {
-        DAWN_TRY(CreateEGLSurface(display));
+        MaybeError created = CreateEGLSurface(display);
+        if (created.IsError()) {
+            DeleteBlitFramebuffer();
+            return created;
+        }
     }
 
     EGLint swapInterval = GetPresentMode() == wgpu::PresentMode::Immediate ? 0 : 1;
@@ -114,9 +142,13 @@ MaybeError SwapChainEGL::PresentImpl() {
 
         const OpenGLFunctions& gl = device->GetGL();
 
-        GLuint readFbo = 0;
-        DAWN_GL_TRY(gl, GenFramebuffers(1, &readFbo));
-        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, readFbo));
+        // The blit framebuffer is kept across presents (and handed to the next swapchain of this
+        // device on reconfigure): some drivers (PowerVR GE8320) block in glDeleteFramebuffers
+        // until the GPU has finished the frame, which stalled every present by up to a frame.
+        if (mBlitFbo == 0) {
+            DAWN_GL_TRY(gl, GenFramebuffers(1, &mBlitFbo));
+        }
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, mBlitFbo));
         DAWN_TRY(mTextureView->BindToFramebuffer(gl, GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0));
         DAWN_TRY(CheckFramebufferComplete(gl, GL_READ_FRAMEBUFFER));
 
@@ -126,7 +158,10 @@ MaybeError SwapChainEGL::PresentImpl() {
                                         mTexture->GetHeight(Aspect::Color), 0, surfaceHeight,
                                         surfaceWidth, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR));
 
-        DAWN_GL_TRY(gl, DeleteFramebuffers(1, &readFbo));
+        // Detached so the kept framebuffer does not hold this frame's texture alive.
+        DAWN_GL_TRY(gl, FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                             GL_TEXTURE_2D, 0, 0));
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, 0));
     }
 
     egl.SwapBuffers(display, mEGLSurface);
@@ -161,6 +196,8 @@ void SwapChainEGL::DetachFromSurfaceImpl() {
         device->GetEGL(false).DestroySurface(device->GetEGLDisplay(), mEGLSurface);
         mEGLSurface = EGL_NO_SURFACE;
     }
+
+    DeleteBlitFramebuffer();
 
     if (mTexture != nullptr) {
         mTexture->APIDestroy();
