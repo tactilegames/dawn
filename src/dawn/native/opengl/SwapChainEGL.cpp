@@ -133,6 +133,13 @@ MaybeError SwapChainEGL::PresentImpl() {
         DAWN_GL_TRY(gl, FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                              GL_TEXTURE_2D, 0, 0));
         DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, 0));
+
+        // eglSwapInterval applies to the current draw surface, which is the window surface only
+        // here; the call in Initialize ran while the offscreen surface was current.
+        if (!mSwapIntervalApplied && egl.GetCurrentSurface(EGL_DRAW) == mEGLSurface) {
+            egl.SwapInterval(display, GetPresentMode() == wgpu::PresentMode::Immediate ? 0 : 1);
+            mSwapIntervalApplied = true;
+        }
     }
 
     egl.SwapBuffers(display, mEGLSurface);

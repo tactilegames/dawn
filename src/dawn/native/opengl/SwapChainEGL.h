@@ -59,6 +59,7 @@ class SwapChainEGL final : public SwapChainBase {
     Ref<Texture> mTexture;
     Ref<TextureView> mTextureView;
     GLuint mBlitFbo = 0;
+    bool mSwapIntervalApplied = false;
 
     MaybeError PresentImpl() override;
     ResultOrError<SwapChainTextureInfo> GetCurrentTextureImpl() override;
