@@ -114,9 +114,12 @@ MaybeError SwapChainEGL::PresentImpl() {
 
         const OpenGLFunctions& gl = device->GetGL();
 
-        GLuint readFbo = 0;
-        DAWN_GL_TRY(gl, GenFramebuffers(1, &readFbo));
-        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, readFbo));
+        // The blit framebuffer lives as long as the swapchain: some drivers (PowerVR GE8320)
+        // block in glDeleteFramebuffers until the GPU has finished the frame.
+        if (mBlitFbo == 0) {
+            DAWN_GL_TRY(gl, GenFramebuffers(1, &mBlitFbo));
+        }
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, mBlitFbo));
         DAWN_TRY(mTextureView->BindToFramebuffer(gl, GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0));
         DAWN_TRY(CheckFramebufferComplete(gl, GL_READ_FRAMEBUFFER));
 
@@ -126,7 +129,10 @@ MaybeError SwapChainEGL::PresentImpl() {
                                         mTexture->GetHeight(Aspect::Color), 0, surfaceHeight,
                                         surfaceWidth, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR));
 
-        DAWN_GL_TRY(gl, DeleteFramebuffers(1, &readFbo));
+        // Detached so the kept framebuffer does not hold this frame's texture alive.
+        DAWN_GL_TRY(gl, FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                             GL_TEXTURE_2D, 0, 0));
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, 0));
     }
 
     egl.SwapBuffers(display, mEGLSurface);
@@ -160,6 +166,16 @@ void SwapChainEGL::DetachFromSurfaceImpl() {
         Device* device = ToBackend(GetDevice());
         device->GetEGL(false).DestroySurface(device->GetEGLDisplay(), mEGLSurface);
         mEGLSurface = EGL_NO_SURFACE;
+    }
+
+    if (mBlitFbo != 0) {
+        GLuint fbo = mBlitFbo;
+        mBlitFbo = 0;
+        IgnoreErrors(
+            ToBackend(GetDevice())->EnqueueGL([fbo](const OpenGLFunctions& gl) -> MaybeError {
+                DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteFramebuffers(1, &fbo));
+                return {};
+            }));
     }
 
     if (mTexture != nullptr) {

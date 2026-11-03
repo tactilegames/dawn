@@ -30,6 +30,7 @@
 
 #include "src/dawn/common/egl_platform.h"
 #include "src/dawn/native/SwapChain.h"
+#include "src/dawn/native/opengl/opengl_platform.h"
 
 namespace dawn::native::opengl {
 
@@ -57,6 +58,7 @@ class SwapChainEGL final : public SwapChainBase {
     EGLSurface mEGLSurface = EGL_NO_SURFACE;
     Ref<Texture> mTexture;
     Ref<TextureView> mTextureView;
+    GLuint mBlitFbo = 0;
 
     MaybeError PresentImpl() override;
     ResultOrError<SwapChainTextureInfo> GetCurrentTextureImpl() override;
