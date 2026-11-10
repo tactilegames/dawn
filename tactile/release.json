@@ -1,0 +1,6 @@
+{
+  "upstreamRev": "9de0fd67086127228e8aa28e69616da37220cfc3",
+  "ndkVersion": "27.2.12479018",
+  "androidPlatform": "android-26",
+  "abis": ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"]
+}
