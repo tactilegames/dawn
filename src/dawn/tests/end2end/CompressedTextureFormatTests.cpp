@@ -25,6 +25,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <numeric>
 #include <vector>
 
 #include "src/dawn/common/Constants.h"
@@ -261,6 +262,44 @@ class CompressedTextureFormatTest : public DawnTestWithParams<CompressedTextureF
                     default: { return vec4f(0.); } // Unreachable
                 }
                 return textureSample(texture0, sampler0, coords);
+            })");
+        renderPipelineDescriptor.vertex.module = vsModule;
+        renderPipelineDescriptor.cFragment.module = fsModule;
+        renderPipelineDescriptor.cTargets[0].format = utils::BasicRenderPass::kDefaultColorFormat;
+
+        return device.CreateRenderPipeline(&renderPipelineDescriptor);
+    }
+
+    // Create a render pipeline for sampling one layer of a texture 2d array and rendering into the
+    // render target. Used for compatibility mode, where a 2d-array texture cannot be bound as 2d.
+    wgpu::RenderPipeline CreateRenderPipelineForTest2DArray() {
+        utils::ComboRenderPipelineDescriptor renderPipelineDescriptor;
+        wgpu::ShaderModule vsModule = utils::CreateShaderModule(device, R"(
+            struct VertexOut {
+                @location(0) texCoord : vec2 <f32>,
+                @builtin(position) position : vec4f,
+            }
+
+            @vertex
+            fn main(@builtin(vertex_index) VertexIndex : u32) -> VertexOut {
+                var pos = array(
+                    vec2f(-3.0,  1.0),
+                    vec2f( 3.0,  1.0),
+                    vec2f( 0.0, -2.0)
+                );
+                var output : VertexOut;
+                output.position = vec4f(pos[VertexIndex], 0.0, 1.0);
+                output.texCoord = vec2f(output.position.x / 2.0, -output.position.y / 2.0) + vec2f(0.5, 0.5);
+                return output;
+            })");
+        wgpu::ShaderModule fsModule = utils::CreateShaderModule(device, R"(
+            @group(0) @binding(0) var sampler0 : sampler;
+            @group(0) @binding(1) var texture0 : texture_2d_array<f32>;
+            @group(0) @binding(2) var<uniform> layer : u32;
+
+            @fragment
+            fn main(@location(0) texCoord : vec2f) -> @location(0) vec4f {
+                return textureSample(texture0, sampler0, texCoord, layer);
             })");
         renderPipelineDescriptor.vertex.module = vsModule;
         renderPipelineDescriptor.cFragment.module = fsModule;
@@ -1378,6 +1417,14 @@ class CompressedTextureWriteTextureTest : public CompressedTextureFormatTest {
                            &copyConfig.copyExtent3D);
     }
 
+    // bytesPerRow with no padding for a copy of `width` texels. WriteTexture takes any
+    // bytesPerRow, so this is the tightly packed layout the GL backend uploads in one call per
+    // image on GLES instead of one call per block row.
+    uint32_t TightBytesPerRow(uint32_t width) const {
+        return width / BlockWidthInTexels() *
+               utils::GetTexelBlockSizeInBytes(GetParam().mTextureFormat);
+    }
+
     // Run the tests that write pre-prepared format data into a texture and verifies if we can
     // render correctly with the pixel values sampled from the texture.
     void TestWriteRegionIntoFormatTextures(const CopyConfig& config) {
@@ -1387,6 +1434,60 @@ class CompressedTextureWriteTextureTest : public CompressedTextureFormatTest {
         WriteToCompressedTexture(texture, config);
 
         VerifyTexture(config, texture);
+    }
+
+    // Like TestWriteRegionIntoFormatTextures for a layered texture that `dimension` (2DArray or
+    // Cube) binds. Compatibility mode cannot view one layer as 2d, so there every written layer is
+    // sampled through a view of `dimension`.
+    void TestWriteLayersIntoFormatTextures(CopyConfig config,
+                                           wgpu::TextureViewDimension dimension) {
+        DAWN_ASSERT(IsFormatSupported());
+        if (!IsCompatibilityMode()) {
+            TestWriteRegionIntoFormatTextures(config);
+            return;
+        }
+
+        wgpu::TextureBindingViewDimension bindingViewDimension;
+        bindingViewDimension.textureBindingViewDimension = dimension;
+        config.textureDescriptor.nextInChain = &bindingViewDimension;
+        wgpu::Texture texture = device.CreateTexture(&config.textureDescriptor);
+        WriteToCompressedTexture(texture, config);
+
+        wgpu::RenderPipeline renderPipeline = dimension == wgpu::TextureViewDimension::Cube
+                                                  ? CreateRenderPipelineForTestCube()
+                                                  : CreateRenderPipelineForTest2DArray();
+        wgpu::Extent3D virtualSizeAtLevel = GetVirtualSizeAtLevel(config);
+        wgpu::Extent3D noPaddingExtent3D = config.copyExtent3D;
+        if (config.copyOrigin3D.x + config.copyExtent3D.width > virtualSizeAtLevel.width) {
+            noPaddingExtent3D.width = virtualSizeAtLevel.width - config.copyOrigin3D.x;
+        }
+        if (config.copyOrigin3D.y + config.copyExtent3D.height > virtualSizeAtLevel.height) {
+            noPaddingExtent3D.height = virtualSizeAtLevel.height - config.copyOrigin3D.y;
+        }
+        noPaddingExtent3D.depthOrArrayLayers = 1u;
+        std::vector<utils::RGBA8> expectedData = GetExpectedData(noPaddingExtent3D);
+        wgpu::Origin3D firstLayerCopyOrigin = {config.copyOrigin3D.x, config.copyOrigin3D.y, 0};
+
+        wgpu::SamplerDescriptor samplerDesc = {};
+        wgpu::Sampler sampler = device.CreateSampler(&samplerDesc);
+        wgpu::TextureViewDescriptor textureViewDescriptor = {};
+        textureViewDescriptor.format = GetParam().mTextureFormat;
+        textureViewDescriptor.dimension = dimension;
+        textureViewDescriptor.baseMipLevel = config.viewMipmapLevel;
+        textureViewDescriptor.mipLevelCount = 1;
+        wgpu::TextureView textureView = texture.CreateView(&textureViewDescriptor);
+
+        for (uint32_t layer = config.copyOrigin3D.z;
+             layer < config.copyOrigin3D.z + config.copyExtent3D.depthOrArrayLayers; ++layer) {
+            wgpu::Buffer uniformBuffer = utils::CreateBufferFromData(
+                device, &layer, sizeof(uint32_t), wgpu::BufferUsage::Uniform);
+            wgpu::BindGroup bindGroup =
+                utils::MakeBindGroup(device, renderPipeline.GetBindGroupLayout(0),
+                                     {{0, sampler}, {1, textureView}, {2, uniformBuffer}});
+            VerifyCompressedTexturePixelValues(renderPipeline, bindGroup, virtualSizeAtLevel,
+                                               firstLayerCopyOrigin, noPaddingExtent3D,
+                                               expectedData);
+        }
     }
 };
 
@@ -1477,6 +1578,100 @@ TEST_P(CompressedTextureWriteTextureTest,
             TestWriteRegionIntoFormatTextures(config);
         }
     }
+}
+
+// Test WriteTexture of a whole 2D level with tightly packed rows (one upload call on GLES).
+TEST_P(CompressedTextureWriteTextureTest, TightRowsWholeLevel) {
+    // TODO(crbug.com/dawn/976): Failing on Linux Intel OpenGL drivers.
+    DAWN_SUPPRESS_TEST_IF(IsIntel() && IsOpenGL() && IsLinux());
+
+    CopyConfig config;
+    config.textureDescriptor.usage = kDefaultFormatTextureUsage;
+    config.textureDescriptor.size = {BlockWidthInTexels() * 7, BlockHeightInTexels() * 6, 1};
+    config.textureDescriptor.format = GetParam().mTextureFormat;
+    config.copyExtent3D = config.textureDescriptor.size;
+    config.bytesPerRowAlignment = TightBytesPerRow(config.copyExtent3D.width);
+
+    TestWriteRegionIntoFormatTextures(config);
+}
+
+// Test WriteTexture of a 2D sub-region with tightly packed rows and a non-zero origin.
+TEST_P(CompressedTextureWriteTextureTest, TightRowsSubRegion) {
+    // PowerVR GE8320/GE8322 GLES drivers corrupt memory in partial compressed uploads (see
+    // DoTexSubImage), including tight sub-regions; this test would crash the process there.
+    DAWN_SUPPRESS_TEST_IF(IsImgTec() && IsOpenGLES());
+
+    // TODO(crbug.com/dawn/976): Failing on Linux Intel OpenGL drivers.
+    DAWN_SUPPRESS_TEST_IF(IsIntel() && IsOpenGL() && IsLinux());
+
+    CopyConfig config;
+    config.textureDescriptor.usage = kDefaultFormatTextureUsage;
+    config.textureDescriptor.size = {BlockWidthInTexels() * 7, BlockHeightInTexels() * 6, 1};
+    config.textureDescriptor.format = GetParam().mTextureFormat;
+    config.copyOrigin3D = {BlockWidthInTexels() * 1, BlockHeightInTexels() * 2, 0};
+    config.copyExtent3D = {BlockWidthInTexels() * 3, BlockHeightInTexels() * 4, 1};
+    config.bytesPerRowAlignment = TightBytesPerRow(config.copyExtent3D.width);
+
+    TestWriteRegionIntoFormatTextures(config);
+}
+
+// Test WriteTexture to several 2D array layers with tightly packed rows, with the images
+// contiguous (one upload call on GLES) and with padding between images (one call per layer).
+TEST_P(CompressedTextureWriteTextureTest, TightRowsMultiple2DArrayLayers) {
+    // TODO(crbug.com/dawn/976): Failing on Linux Intel OpenGL drivers.
+    DAWN_SUPPRESS_TEST_IF(IsIntel() && IsOpenGL() && IsLinux());
+
+    constexpr uint32_t kExtentHeightInBlocks = 4;
+    for (uint32_t rowsPerImage : {kExtentHeightInBlocks, kExtentHeightInBlocks + 1}) {
+        CopyConfig config;
+        config.textureDescriptor.usage = kDefaultFormatTextureUsage;
+        config.textureDescriptor.size = {BlockWidthInTexels() * 7, BlockHeightInTexels() * 6, 9};
+        config.textureDescriptor.format = GetParam().mTextureFormat;
+        config.copyOrigin3D = {0, 0, 3};
+        config.copyExtent3D = {BlockWidthInTexels() * 7,
+                               BlockHeightInTexels() * kExtentHeightInBlocks, 6};
+        config.bytesPerRowAlignment = TightBytesPerRow(config.copyExtent3D.width);
+        config.rowsPerImage = rowsPerImage;
+
+        TestWriteLayersIntoFormatTextures(config, wgpu::TextureViewDimension::e2DArray);
+    }
+}
+
+// Test WriteTexture of all six faces of a cube texture with tightly packed rows (one upload call
+// per face on GLES).
+TEST_P(CompressedTextureWriteTextureTest, TightRowsCube) {
+    // Cube faces are square: two of the smallest square tiles of whole blocks on each side, so
+    // formats with non-square blocks (ASTC 5x4, 6x5, ...) fit too.
+    const uint32_t side = 2 * std::lcm(BlockWidthInTexels(), BlockHeightInTexels());
+    constexpr uint32_t kLayers = 6;
+    CopyConfig config = GetDefaultSmallConfig(kLayers);
+    config.textureDescriptor.size = {side, side, kLayers};
+    config.copyExtent3D = config.textureDescriptor.size;
+    config.bytesPerRowAlignment = TightBytesPerRow(config.copyExtent3D.width);
+    // Contiguous faces: one upload call per face on GLES.
+    config.rowsPerImage = config.copyExtent3D.height / BlockHeightInTexels();
+
+    TestWriteLayersIntoFormatTextures(config, wgpu::TextureViewDimension::Cube);
+}
+
+// Test WriteTexture with tightly packed rows into a mip level whose physical size is larger than
+// its virtual size.
+TEST_P(CompressedTextureWriteTextureTest, TightRowsPhysicalSizeNotEqualToVirtualSize) {
+    // TODO(crbug.com/dawn/976): Failing on Linux Intel OpenGL drivers.
+    DAWN_SUPPRESS_TEST_IF(IsIntel() && IsOpenGL() && IsLinux());
+
+    // TODO(crbug.com/dawn/0000): diagnose this failure on QualComm OpenGL ES.
+    DAWN_SUPPRESS_TEST_IF(IsAndroid() && IsOpenGLES() && IsQualcomm());
+
+    // TODO(https://issues.chromium.org/issues/41479545): see
+    // WriteIntoSubresourceWithPhysicalSizeNotEqualToVirtualSize.
+    DAWN_SUPPRESS_TEST_IF(IsVulkan() && IsBackendValidationEnabled());
+
+    CopyConfig config = GetDefaultFullConfig();
+    config.copyExtent3D = GetPhysicalSizeAtLevel(config);
+    config.bytesPerRowAlignment = TightBytesPerRow(config.copyExtent3D.width);
+
+    TestWriteRegionIntoFormatTextures(config);
 }
 
 DAWN_INSTANTIATE_TEST_P(CompressedTextureWriteTextureTest,
