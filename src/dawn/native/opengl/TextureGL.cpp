@@ -635,12 +635,15 @@ MaybeError Texture::ClearTexture(const OpenGLFunctions& gl,
             textureCopy.origin = {};
             textureCopy.aspect = Aspect::Color;
 
+            Extent3D mipSize = GetMipLevelSingleSubresourcePhysicalSize(level, Aspect::Color);
+
+            // Each level's own tight layout (the buffer is sized for the largest), so that
+            // DoTexSubImage can upload whole images instead of one block row per call on GLES.
             TexelCopyBufferLayout dataLayout;
             dataLayout.offset = 0;
-            dataLayout.bytesPerRow = bytesPerRow;
-            dataLayout.rowsPerImage = largestMipSize.height / blockInfo.height;
-
-            Extent3D mipSize = GetMipLevelSingleSubresourcePhysicalSize(level, Aspect::Color);
+            dataLayout.bytesPerRow =
+                Align((mipSize.width / blockInfo.width) * blockInfo.byteSize, 4);
+            dataLayout.rowsPerImage = mipSize.height / blockInfo.height;
 
             for (uint32_t layer = range.baseArrayLayer;
                  layer < range.baseArrayLayer + range.layerCount; ++layer) {
