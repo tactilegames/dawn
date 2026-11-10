@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       rev: ${{ steps.plan.outputs.rev }}
-      ahead: ${{ steps.plan.outputs.ahead }}
+      depth: ${{ steps.plan.outputs.depth }}
       tag: ${{ steps.plan.outputs.tag }}
       abis: ${{ steps.plan.outputs.abis }}
     env:
@@ -65,7 +65,7 @@ jobs:
             tag="$prefix$(( ${last:-0} + 1 ))"
           fi
           abis=$(jq -c .abis tactile/release.json)
-          printf 'rev=%s\nahead=%s\ntag=%s\nabis=%s\n' "$rev" "$ahead" "$tag" "$abis" | tee -a "$GITHUB_OUTPUT"
+          printf 'rev=%s\ndepth=%s\ntag=%s\nabis=%s\n' "$rev" "$((ahead + 1))" "$tag" "$abis" | tee -a "$GITHUB_OUTPUT"
 
   build:
     name: Dawn ${{ matrix.abi }}
@@ -119,7 +119,7 @@ jobs:
         with:
           persist-credentials: false
           # Our commits and the upstream rev under them, for the patch files.
-          fetch-depth: ${{ fromJSON(needs.plan.outputs.ahead) + 1 }}
+          fetch-depth: ${{ needs.plan.outputs.depth }}
       - uses: actions/download-artifact@v4
         with:
           pattern: dawn-android-*
