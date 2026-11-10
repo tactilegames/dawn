@@ -1,9 +1,7 @@
 # Tactile's Dawn fork
 
 Google's [Dawn](https://dawn.googlesource.com/dawn) (WebGPU) with fixes to its OpenGL ES backend
-that upstream has not taken yet, and Android builds of it for the
-[Game Engine](https://github.com/tactilegames/game-engine). The Game Engine links these builds on
-Android only; every other platform uses Google's own release.
+that upstream has not taken yet, and Android builds of it.
 
 ## Branches
 
@@ -38,8 +36,7 @@ All in `src/dawn/native/opengl/`; Vulkan, Metal and D3D are unchanged.
 1. Keep the swapchain's blit framebuffer across presents. Some drivers (PowerVR GE8320) block in
    `glDeleteFramebuffers` until the GPU has finished the frame.
 2. Apply the swap interval to the window surface, where `eglSwapInterval` takes effect.
-3. Upload tightly packed compressed 2D textures in one call instead of one per block row. PowerVR
-   GE832x drivers also crash in the per-row uploads.
+3. Upload tightly packed compressed 2D textures in one call instead of one per block row.
 
 Each is meant for upstream. Once upstream has them all, this repository stops publishing.
 
