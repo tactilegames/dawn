@@ -1,0 +1,167 @@
+# Tactile's Android release of Dawn with our GLES fixes (tactile/README.md).
+#
+# A pull request into a gles/<rev> branch builds every ABI, without publishing. A merge (a push to the
+# branch) builds the merged commit and publishes it as release dawn-android-<rev>-gles.<n>, n one
+# above the branch's last release. A release is never replaced: the Game Engine pins its sha256.
+# Nothing uses a release until an engine PR pins it.
+#
+# GitHub-hosted runners, as Dawn's own Android CI (.github/workflows/ci.yml, mobile-android): this
+# repo is public, so pull requests must not reach self-hosted machines.
+name: tactile-android
+
+on:
+  pull_request:
+    branches: ['gles/**']
+  push:
+    branches: ['gles/**']
+    paths-ignore: ['tactile/*.md']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tactile-android-${{ github.event_name }}-${{ github.ref }}
+  # A newer PR push replaces its build; releases run one after another, never cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rev: ${{ steps.plan.outputs.rev }}
+      ahead: ${{ steps.plan.outputs.ahead }}
+      tag: ${{ steps.plan.outputs.tag }}
+      abis: ${{ steps.plan.outputs.abis }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: ${{ github.base_ref || github.ref_name }}
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: tests
+        run: node --test tactile/*.test.mjs
+      - name: what to build
+        id: plan
+        run: |
+          rev=$(jq -r .upstreamRev tactile/release.json)
+          if [ "$BRANCH" != "gles/${rev:0:8}" ]; then
+            echo "::error::branch $BRANCH must be gles/${rev:0:8}, the upstreamRev in tactile/release.json"
+            exit 1
+          fi
+          # The build sits on top of the upstream rev it names (no history needed for the check).
+          read -r status ahead < <(gh api "repos/$GITHUB_REPOSITORY/compare/$rev...$SHA" --jq '"\(.status) \(.ahead_by)"')
+          if [ "$status" != ahead ]; then
+            echo "::error::$SHA is not ahead of upstream $rev (compare status: $status)"
+            exit 1
+          fi
+          tag=
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            prefix="dawn-android-${rev:0:8}-gles."
+            last=$(gh release list -R "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' \
+              | sed -n "s/^${prefix//./\\.}\([0-9][0-9]*\)$/\1/p" | sort -n | tail -1)
+            tag="$prefix$(( ${last:-0} + 1 ))"
+          fi
+          abis=$(jq -c .abis tactile/release.json)
+          printf 'rev=%s\nahead=%s\ntag=%s\nabis=%s\n' "$rev" "$ahead" "$tag" "$abis" | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    name: Dawn ${{ matrix.abi }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: ${{ fromJSON(needs.plan.outputs.abis) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: tools and the pinned NDK
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build
+          ndk=$(jq -r .ndkVersion tactile/release.json)
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$ndk" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ndk" >> "$GITHUB_ENV"
+      - name: Dawn for ${{ matrix.abi }}
+        run: |
+          tactile/build-android.sh ${{ matrix.abi }} "$RUNNER_TEMP/dawn-${{ matrix.abi }}"
+          mkdir -p "dist/${{ matrix.abi }}"
+          cp "$RUNNER_TEMP/dawn-${{ matrix.abi }}/lib/libwebgpu_dawn.a" "dist/${{ matrix.abi }}/"
+          ls -l "dist/${{ matrix.abi }}"
+      # BSD-3 (Dawn) and Apache-2.0 (abseil, SPIRV-Tools, …) ask binaries to carry their notices.
+      - name: license notices of what was compiled
+        run: node tactile/collect-licenses.mjs . "out/android-${{ matrix.abi }}" "dist/${{ matrix.abi }}/licenses"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dawn-android-${{ matrix.abi }}
+          path: dist/${{ matrix.abi }}
+          retention-days: 3
+
+  publish:
+    name: publish ${{ needs.plan.outputs.tag }}
+    if: github.event_name == 'push'
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REV: ${{ needs.plan.outputs.rev }}
+      TAG: ${{ needs.plan.outputs.tag }}
+      ABIS: ${{ needs.plan.outputs.abis }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # Our commits and the upstream rev under them, for the patch files.
+          fetch-depth: ${{ fromJSON(needs.plan.outputs.ahead) + 1 }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dawn-android-*
+          path: artifacts
+      # The layout of Google's dawn-android-<rev>.tar.gz: one top-level folder, one folder per ABI.
+      - name: package
+        run: |
+          dir="dawn-android-$REV"
+          mkdir -p "$dir/licenses" "$dir/patches"
+          for abi in $(jq -r '.[]' <<< "$ABIS"); do
+            mkdir -p "$dir/$abi"
+            cp "artifacts/dawn-android-$abi/libwebgpu_dawn.a" "$dir/$abi/"
+            cp -R "artifacts/dawn-android-$abi/licenses/." "$dir/licenses/"
+          done
+          test -f "$dir/licenses/LICENSE"
+          # Our changes to Dawn, without the release tooling.
+          git format-patch --zero-commit --no-signature -o "$dir/patches" "$REV..HEAD" -- . ':!tactile' ':!.github/workflows/tactile-android.yml'
+          ls "$dir/patches"
+          tar -czf "$dir.tar.gz" "$dir"
+          sha256sum "$dir.tar.gz" | tee SHA256SUMS
+          cp "$dir/licenses/LICENSE" LICENSE
+          {
+            echo "### $TAG"
+            echo "Pin the engine's \`dawn.assets.android\` to tag \`$TAG\`, sha256:"
+            echo '```'
+            cut -d' ' -f1 SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: publish release ${{ env.TAG }}
+        run: |
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists"
+            exit 1
+          fi
+          {
+            echo "google/dawn $REV for Android ($(jq -r 'join(", ")' <<< "$ABIS")), built from $GITHUB_SHA on $GITHUB_REF_NAME with:"
+            echo
+            ls "dawn-android-$REV/patches" | sed 's/^/- /'
+            echo
+            echo "NDK $(jq -r .ndkVersion tactile/release.json), $(jq -r .androidPlatform tactile/release.json), Dawn's mobile CMake recipe. The patches are inside the archive."
+            echo
+            echo "Dawn is BSD-3-Clause (LICENSE). The archive's licenses/ folder holds the notices of Dawn and of every third-party component compiled into the libraries."
+          } > notes.md
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false --title "$TAG" --notes-file notes.md \
+            "dawn-android-$REV.tar.gz" SHA256SUMS LICENSE
