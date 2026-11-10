@@ -512,6 +512,10 @@ set(BUILD_SHARED_LIBS 0)
 add_subdirectory(src/utils)
 add_subdirectory(src/tint)
 
+if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tactile/shader-compiler.cmake")
+  include(tactile/shader-compiler.cmake)
+endif()
+
 set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 
 if (DAWN_ENABLE_D3D11 OR DAWN_ENABLE_D3D12 OR DAWN_ENABLE_METAL OR DAWN_ENABLE_NULL OR DAWN_ENABLE_DESKTOP_GL OR DAWN_ENABLE_OPENGLES OR DAWN_ENABLE_VULKAN OR EMSCRIPTEN)
@@ -557,6 +561,7 @@ if (DAWN_EMIT_COVERAGE)
 endif()
 
 if (DAWN_BUILD_MONOLITHIC_LIBRARY AND DAWN_ENABLE_INSTALL)
+  install(DIRECTORY include/dawn/platform DESTINATION include/dawn)
   # This series of functions add the necessary information so that other CMake projects
   # can use Dawn, be it from a build directory, a local install or when packaged.
   install(EXPORT DawnTargets

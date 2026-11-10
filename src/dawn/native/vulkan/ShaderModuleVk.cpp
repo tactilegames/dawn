@@ -395,6 +395,32 @@ ResultOrError<ShaderModule::ModuleAndSpirv> ShaderModule::GetHandleAndSpirv(
             subgroupSizeInfo.subgroupSizeControlProperties.maxComputeWorkgroupSubgroups;
     }
 
+    // Record inputs, never compiled output: a build-host tool can run this exact request through
+    // Tint ahead of installation. Platform features do not change the device's cache identity.
+    if (GetDevice()->GetPlatform()->IsFeatureEnabled(
+            dawn::platform::Features::kRecordShaderCompilationRequests)) {
+        const auto originalKey = req.CreateCacheKey(GetDevice());
+        constexpr char prefix[] = "GameEngineShaderRequest";
+        CacheKey recordingKey;
+        const auto* prefixBytes = reinterpret_cast<const std::byte*>(prefix);
+        recordingKey.insert(recordingKey.end(), prefixBytes, prefixBytes + sizeof(prefix));
+        recordingKey.insert(recordingKey.end(), originalKey.begin(), originalKey.end());
+        const auto program = GetTintProgram();
+        const auto& wgsl = program->file->content.data;
+        constexpr char magic[] = "GESHREQ1";
+        std::vector<std::byte> request;
+        const auto* magicBytes = reinterpret_cast<const std::byte*>(magic);
+        request.insert(request.end(), magicBytes, magicBytes + sizeof(magic) - 1);
+        request.push_back(std::byte(GetDevice()->IsToggleEnabled(Toggle::BlobCacheHashValidation)));
+        const auto length = static_cast<uint32_t>(wgsl.size());
+        for (uint32_t shift = 0; shift < 32; shift += 8) {
+            request.push_back(std::byte((length >> shift) & 255));
+        }
+        const auto* sourceBytes = reinterpret_cast<const std::byte*>(wgsl.data());
+        request.insert(request.end(), sourceBytes, sourceBytes + wgsl.size());
+        GetDevice()->GetBlobCache()->Store(recordingKey, request);
+    }
+
     CacheResult<CompiledSpirv> compilation;
     DAWN_TRY_LOAD_OR_RUN(
         compilation, GetDevice(), std::move(req), CompiledSpirv::FromValidatedBlob,

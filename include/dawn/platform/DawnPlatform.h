@@ -142,6 +142,7 @@ enum class Features {
     kWebGPUDecomposeUniformBuffers,
     kWebGPUUseHLSL2021,
     kWebGPUUseSpirvReconvergenceMode,
+    kRecordShaderCompilationRequests,
 };
 
 class DAWN_PLATFORM_EXPORT Platform {
