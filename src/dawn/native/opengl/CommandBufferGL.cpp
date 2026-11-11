@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -1850,7 +1851,68 @@ MaybeError DoTexSubImage(const OpenGLFunctions& gl,
             DAWN_GL_TRY(gl, PixelStorei(GL_UNPACK_COMPRESSED_BLOCK_HEIGHT, 0));
             DAWN_GL_TRY(gl, PixelStorei(GL_UNPACK_COMPRESSED_BLOCK_DEPTH, 0));
         } else {
-            if (target == GL_TEXTURE_2D) {
+            // Without GL_UNPACK_COMPRESSED_BLOCK_*, one call can only take tightly packed rows.
+            // When the rows are tight, upload each image in one call instead of one call per
+            // block row. Besides costing a fraction of the calls (~0.38 ms each on a PowerVR
+            // GE8320), this avoids a driver bug: PowerVR GE8320/GE8322 drivers corrupt memory and
+            // crash in many per-block-row glCompressedTexSubImage2D uploads of ASTC (5x5, 6x6,
+            // 8x5, 8x6, 10x10 among others). Whole-level 2D uploads were never seen to crash
+            // there; tight multi-row sub-regions were, so callers that must avoid the bug should
+            // write whole levels. Padded rows still go up one block row per call.
+            const bool tightRows = bytesPerRow == rowSize || blockCopySize.height == BlockCount{1u};
+            const TexelCount imageHeight = std::min(copySize.height, virtSize.height - y);
+            const uint64_t imageSize =
+                static_cast<uint64_t>(rowSize) * dchecked_cast<uint32_t>(blockCopySize.height);
+            const uint32_t layers = dchecked_cast<uint32_t>(copySize.depthOrArrayLayers);
+            if (tightRows && target == GL_TEXTURE_2D) {
+                DAWN_GL_TRY(gl, CompressedTexSubImage2D(
+                                    target, destination.mipLevel, dchecked_cast<uint32_t>(x),
+                                    dchecked_cast<uint32_t>(y), dchecked_cast<uint32_t>(width),
+                                    dchecked_cast<uint32_t>(imageHeight), format.internalFormat,
+                                    checked_cast<GLsizei>(imageSize), data));
+            } else if (tightRows && target == GL_TEXTURE_CUBE_MAP) {
+                DAWN_ASSERT(texture->GetArrayLayers() == 6);
+                const uint8_t* pointer = static_cast<const uint8_t*>(data);
+                for (uint32_t l = 0; l < layers; ++l) {
+                    GLenum cubeMapTarget =
+                        GL_TEXTURE_CUBE_MAP_POSITIVE_X + dchecked_cast<uint32_t>(z) + l;
+                    DAWN_GL_TRY(gl,
+                                CompressedTexSubImage2D(
+                                    cubeMapTarget, destination.mipLevel, dchecked_cast<uint32_t>(x),
+                                    dchecked_cast<uint32_t>(y), dchecked_cast<uint32_t>(width),
+                                    dchecked_cast<uint32_t>(imageHeight), format.internalFormat,
+                                    checked_cast<GLsizei>(imageSize), pointer));
+                    DAWN_UNSAFE_TODO(pointer += bytesPerImage);
+                }
+            } else if (tightRows) {
+                DAWN_ASSERT(target == GL_TEXTURE_3D || target == GL_TEXTURE_2D_ARRAY ||
+                            target == GL_TEXTURE_CUBE_MAP_ARRAY);
+                // A single call takes at most INT_MAX bytes (GLsizei).
+                if ((layers == 1 || bytesPerImage == imageSize) &&
+                    imageSize * layers <=
+                        static_cast<uint64_t>(std::numeric_limits<GLsizei>::max())) {
+                    // The images are contiguous too: all of them in one call.
+                    DAWN_GL_TRY(
+                        gl, CompressedTexSubImage3D(
+                                target, destination.mipLevel, dchecked_cast<uint32_t>(x),
+                                dchecked_cast<uint32_t>(y), dchecked_cast<uint32_t>(z),
+                                dchecked_cast<uint32_t>(width),
+                                dchecked_cast<uint32_t>(imageHeight), layers, format.internalFormat,
+                                checked_cast<GLsizei>(imageSize * layers), data));
+                } else {
+                    const uint8_t* pointer = static_cast<const uint8_t*>(data);
+                    for (uint32_t l = 0; l < layers; ++l) {
+                        DAWN_GL_TRY(
+                            gl, CompressedTexSubImage3D(
+                                    target, destination.mipLevel, dchecked_cast<uint32_t>(x),
+                                    dchecked_cast<uint32_t>(y), dchecked_cast<uint32_t>(z) + l,
+                                    dchecked_cast<uint32_t>(width),
+                                    dchecked_cast<uint32_t>(imageHeight), 1, format.internalFormat,
+                                    checked_cast<GLsizei>(imageSize), pointer));
+                        DAWN_UNSAFE_TODO(pointer += bytesPerImage);
+                    }
+                }
+            } else if (target == GL_TEXTURE_2D) {
                 const uint8_t* d = static_cast<const uint8_t*>(data);
 
                 for (; y < destination.origin.y + copySize.height; y += blockInfo.height) {
