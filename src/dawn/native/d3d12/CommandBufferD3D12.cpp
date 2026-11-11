@@ -1454,7 +1454,7 @@ MaybeError CommandBuffer::RecordComputePass(CommandRecordingContext* commandCont
                 DispatchCmd* dispatch = mCommands.NextCommand<DispatchCmd>();
 
                 const SyncScopeResourceUsage& scope =
-                    resourceUsages.dispatchUsages[currentDispatch++];
+                    resourceUsages.GetDispatchUsage(currentDispatch++);
 
                 // Skip noop dispatches, it can cause D3D12 warning from validation layers and
                 // leads to device lost.
@@ -1475,7 +1475,7 @@ MaybeError CommandBuffer::RecordComputePass(CommandRecordingContext* commandCont
                 DispatchIndirectCmd* dispatch = mCommands.NextCommand<DispatchIndirectCmd>();
 
                 const SyncScopeResourceUsage& scope =
-                    resourceUsages.dispatchUsages[currentDispatch++];
+                    resourceUsages.GetDispatchUsage(currentDispatch++);
 
                 DAWN_TRY(TransitionAndClearForSyncScope(commandContext, scope));
                 DAWN_TRY(bindingTracker->Apply(commandContext, &immediates));

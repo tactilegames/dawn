@@ -86,7 +86,15 @@ struct SyncScopeResourceUsage {
 // textures used, because some unused BindGroups may not be used at all in synchronization
 // scope but their resources still need to be validated on Queue::Submit.
 struct ComputePassResourceUsage {
+    // The distinct synchronization scopes of the pass: consecutive Dispatches with the same bind
+    // groups share one.
     std::vector<SyncScopeResourceUsage> dispatchUsages;
+    // For each Dispatch, in order, the index of its scope in dispatchUsages.
+    std::vector<uint32_t> dispatchScopeIndices;
+
+    const SyncScopeResourceUsage& GetDispatchUsage(size_t dispatchIndex) const {
+        return dispatchUsages[dispatchScopeIndices[dispatchIndex]];
+    }
 
     // All the resources referenced by this compute pass for validation in Queue::Submit.
     absl::flat_hash_set<BufferBase*> referencedBuffers;

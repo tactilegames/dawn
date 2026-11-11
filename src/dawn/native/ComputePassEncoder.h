@@ -106,7 +106,16 @@ class ComputePassEncoder final : public ProgrammableEncoder {
     // Adds the bindgroups used for the current dispatch to the SyncScopeResourceUsage and
     // records it in mUsageTracker.
     void AddDispatchSyncScope(SyncScopeUsageTracker scope = {});
+    // The same for a direct Dispatch, reusing the previous direct Dispatch's scope when it used
+    // the same bind groups and resource table: its resources and their usages are the same.
+    void AddDirectDispatchSyncScope();
     ComputePassResourceUsageTracker mUsageTracker;
+
+    // The bind groups and resource table of the last scope recorded by AddDirectDispatchSyncScope,
+    // valid while mLastDirectDispatchScopeValid. The commands hold references to them.
+    PerBindGroup<raw_ptr<BindGroupBase>> mLastDirectDispatchBindGroups = {};
+    raw_ptr<ResourceTableBase> mLastDirectDispatchResourceTable = nullptr;
+    bool mLastDirectDispatchScopeValid = false;
 
     // For render and compute passes, the encoding context is borrowed from the command encoder.
     // Keep a reference to the encoder to make sure the context isn't freed.

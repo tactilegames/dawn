@@ -56,6 +56,60 @@ class CommandBufferEncodingTests : public DawnNativeTest {
     }
 };
 
+// Consecutive dispatches with the same bind groups share one synchronization scope, whatever their
+// dynamic offsets. A dispatch with other bind groups gets a scope of its own.
+TEST_F(CommandBufferEncodingTests, ComputePassDispatchesShareRepeatedSyncScopes) {
+    wgpu::BindGroupLayout layout =
+        utils::MakeBindGroupLayout(device, {{
+                                               0,
+                                               wgpu::ShaderStage::Compute,
+                                               wgpu::BufferBindingType::Uniform,
+                                               true,
+                                           }});
+
+    wgpu::ComputePipelineDescriptor csDesc;
+    csDesc.compute.module = utils::CreateShaderModule(device, R"(
+        @compute @workgroup_size(1, 1, 1)
+        fn main() {
+        })");
+    csDesc.layout = utils::MakePipelineLayout(device, {layout});
+    wgpu::ComputePipeline pipeline = device.CreateComputePipeline(&csDesc);
+
+    wgpu::BufferDescriptor bufferDesc = {};
+    bufferDesc.size = 512;
+    bufferDesc.usage = wgpu::BufferUsage::Uniform;
+    wgpu::Buffer bufferA = device.CreateBuffer(&bufferDesc);
+    wgpu::Buffer bufferB = device.CreateBuffer(&bufferDesc);
+    wgpu::BindGroup groupA = utils::MakeBindGroup(device, layout, {{0, bufferA, 0, 256}});
+    wgpu::BindGroup groupB = utils::MakeBindGroup(device, layout, {{0, bufferB, 0, 256}});
+
+    uint32_t offsets[] = {0, 256};
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::ComputePassEncoder pass = encoder.BeginComputePass();
+    pass.SetPipeline(pipeline);
+    pass.SetBindGroup(0, groupA, 1, &offsets[0]);
+    pass.DispatchWorkgroups(1);
+    pass.SetBindGroup(0, groupA, 1, &offsets[1]);
+    pass.DispatchWorkgroups(1);
+    pass.SetBindGroup(0, groupB, 1, &offsets[0]);
+    pass.DispatchWorkgroups(1);
+    pass.SetBindGroup(0, groupA, 1, &offsets[0]);
+    pass.DispatchWorkgroups(1);
+    pass.End();
+    wgpu::CommandBuffer commandBuffer = encoder.Finish();
+
+    const ComputePassResourceUsage& usage =
+        FromAPI(commandBuffer.Get())->GetResourceUsages().computePasses[PassIndex(0u)];
+    EXPECT_EQ(usage.dispatchScopeIndices, (std::vector<uint32_t>{0, 0, 1, 2}));
+    ASSERT_EQ(usage.dispatchUsages.size(), 3u);
+    EXPECT_EQ(usage.GetDispatchUsage(1).buffers,
+              (std::vector<BufferBase*>{FromAPI(bufferA.Get())}));
+    EXPECT_EQ(usage.GetDispatchUsage(2).buffers,
+              (std::vector<BufferBase*>{FromAPI(bufferB.Get())}));
+    EXPECT_EQ(usage.GetDispatchUsage(3).buffers,
+              (std::vector<BufferBase*>{FromAPI(bufferA.Get())}));
+}
+
 // Indirect dispatch validation changes the bind groups in the middle
 // of a pass. Test that bindings are restored after the validation runs.
 TEST_F(CommandBufferEncodingTests, ComputePassEncoderIndirectDispatchStateRestoration) {
