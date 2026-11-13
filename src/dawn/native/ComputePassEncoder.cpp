@@ -185,6 +185,7 @@ Ref<ComputePassEncoder> ComputePassEncoder::MakeError(DeviceBase* device,
 
 void ComputePassEncoder::DestroyImpl(DestroyReason reason) {
     mCommandBufferState.End();
+    ForgetDirectDispatchSyncScope();
 
     // Ensure that the pass has exited. This is done for passes only since validation requires
     // they exit before destruction while bundles do not.
@@ -203,6 +204,7 @@ void ComputePassEncoder::APIEnd() {
 
     mEnded = true;
     mCommandBufferState.End();
+    ForgetDirectDispatchSyncScope();
 
     if (mEncodingContext->TryEncode(
             this,
@@ -482,7 +484,7 @@ void ComputePassEncoder::APIDispatchWorkgroupsIndirect(BufferBase* indirectBuffe
 
             AddDispatchSyncScope(std::move(scope));
             // That scope also holds the indirect buffer.
-            mLastDirectDispatchScopeValid = false;
+            ForgetDirectDispatchSyncScope();
 
             DispatchIndirectCmd* dispatch =
                 allocator->Allocate<DispatchIndirectCmd>(Command::DispatchIndirect);
@@ -641,6 +643,12 @@ void ComputePassEncoder::AddDirectDispatchSyncScope() {
     }
     AddDispatchSyncScope();
     mLastDirectDispatchScopeValid = true;
+}
+
+void ComputePassEncoder::ForgetDirectDispatchSyncScope() {
+    mLastDirectDispatchBindGroups = {};
+    mLastDirectDispatchResourceTable = nullptr;
+    mLastDirectDispatchScopeValid = false;
 }
 
 void ComputePassEncoder::RestoreCommandBufferState(CommandBufferStateTracker state) {

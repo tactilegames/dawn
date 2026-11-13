@@ -25,6 +25,7 @@
 // OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -108,6 +109,111 @@ TEST_F(CommandBufferEncodingTests, ComputePassDispatchesShareRepeatedSyncScopes)
               (std::vector<BufferBase*>{FromAPI(bufferB.Get())}));
     EXPECT_EQ(usage.GetDispatchUsage(3).buffers,
               (std::vector<BufferBase*>{FromAPI(bufferA.Get())}));
+}
+
+// A Dispatch reuses the previous scope only while every bind group its pipeline layout uses is the
+// same: a change at a higher group index or a layout using fewer groups records a new scope, a new
+// pipeline with the same layout does not, and a direct Dispatch after an indirect one never reuses
+// the indirect scope, which also holds the indirect buffer.
+void ExpectSyncScopeReuseFollowsLayoutAndIndirect(const wgpu::Device& device, bool validation) {
+    wgpu::BindGroupLayout layout = utils::MakeBindGroupLayout(
+        device, {{0, wgpu::ShaderStage::Compute, wgpu::BufferBindingType::Uniform}});
+    auto makePipeline = [&](std::vector<wgpu::BindGroupLayout> layouts) {
+        wgpu::ComputePipelineDescriptor csDesc;
+        csDesc.compute.module = utils::CreateShaderModule(device, R"(
+            @compute @workgroup_size(1, 1, 1)
+            fn main() {
+            })");
+        csDesc.layout = utils::MakePipelineLayout(device, std::move(layouts));
+        return device.CreateComputePipeline(&csDesc);
+    };
+    wgpu::ComputePipeline twoGroups = makePipeline({layout, layout});
+    wgpu::ComputePipeline twoGroupsAgain = makePipeline({layout, layout});
+    wgpu::ComputePipeline oneGroup = makePipeline({layout});
+
+    wgpu::BufferDescriptor bufferDesc = {};
+    bufferDesc.size = 256;
+    bufferDesc.usage = wgpu::BufferUsage::Uniform;
+    wgpu::Buffer bufferA = device.CreateBuffer(&bufferDesc);
+    wgpu::Buffer bufferC = device.CreateBuffer(&bufferDesc);
+    wgpu::Buffer bufferD = device.CreateBuffer(&bufferDesc);
+    wgpu::BindGroup groupA = utils::MakeBindGroup(device, layout, {{0, bufferA}});
+    wgpu::BindGroup groupC = utils::MakeBindGroup(device, layout, {{0, bufferC}});
+    wgpu::BindGroup groupD = utils::MakeBindGroup(device, layout, {{0, bufferD}});
+
+    bufferDesc.size = 12;
+    bufferDesc.usage = wgpu::BufferUsage::Indirect;
+    wgpu::Buffer indirect = device.CreateBuffer(&bufferDesc);
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::ComputePassEncoder pass = encoder.BeginComputePass();
+    pass.SetPipeline(twoGroups);
+    pass.SetBindGroup(0, groupA);
+    pass.SetBindGroup(1, groupC);
+    pass.DispatchWorkgroups(1);  // scope 0: A, C
+    pass.SetBindGroup(1, groupD);
+    pass.DispatchWorkgroups(1);  // scope 1: A, D
+    pass.SetPipeline(twoGroupsAgain);
+    pass.DispatchWorkgroups(1);  // scope 1 again
+    pass.SetPipeline(oneGroup);
+    pass.DispatchWorkgroups(1);  // scope 2: A
+    pass.DispatchWorkgroupsIndirect(indirect, 0);
+    pass.DispatchWorkgroups(1);  // a new scope: A
+    pass.End();
+    wgpu::CommandBuffer commandBuffer = encoder.Finish();
+
+    const ComputePassResourceUsage& usage =
+        FromAPI(commandBuffer.Get())->GetResourceUsages().computePasses[PassIndex(0u)];
+    const std::vector<uint32_t>& indices = usage.dispatchScopeIndices;
+    ASSERT_GE(indices.size(), 6u);
+    EXPECT_EQ(std::vector<uint32_t>(indices.begin(), indices.begin() + 4),
+              (std::vector<uint32_t>{0, 1, 1, 2}));
+
+    auto buffersOf = [&](size_t dispatch) {
+        const std::vector<BufferBase*>& buffers = usage.GetDispatchUsage(dispatch).buffers;
+        return std::set<BufferBase*>(buffers.begin(), buffers.end());
+    };
+    EXPECT_EQ(buffersOf(0),
+              (std::set<BufferBase*>{FromAPI(bufferA.Get()), FromAPI(bufferC.Get())}));
+    EXPECT_EQ(buffersOf(1),
+              (std::set<BufferBase*>{FromAPI(bufferA.Get()), FromAPI(bufferD.Get())}));
+    EXPECT_EQ(buffersOf(3), (std::set<BufferBase*>{FromAPI(bufferA.Get())}));
+
+    // Indirect validation adds dispatches of its own; the last two are the indirect dispatch and
+    // the direct one after it.
+    if (!validation) {
+        EXPECT_EQ(indices, (std::vector<uint32_t>{0, 1, 1, 2, 3, 4}));
+        EXPECT_EQ(buffersOf(4),
+                  (std::set<BufferBase*>{FromAPI(bufferA.Get()), FromAPI(indirect.Get())}));
+    }
+    size_t last = indices.size() - 1;
+    EXPECT_NE(indices[last], indices[last - 1]);
+    EXPECT_EQ(indices[last], usage.dispatchUsages.size() - 1);
+    EXPECT_EQ(buffersOf(last), (std::set<BufferBase*>{FromAPI(bufferA.Get())}));
+}
+
+TEST_F(CommandBufferEncodingTests, ComputePassSyncScopeReuseFollowsLayoutAndIndirect) {
+    ExpectSyncScopeReuseFollowsLayoutAndIndirect(device, true);
+}
+
+// Without validation an indirect Dispatch is recorded as is, right after the direct ones, so a
+// direct Dispatch after it would see its own bind groups unchanged.
+class CommandBufferEncodingSkipValidationTests : public DawnNativeTest {
+  public:
+    wgpu::DawnTogglesDescriptor DeviceToggles() override {
+        wgpu::DawnTogglesDescriptor toggles = {};
+        toggles.enabledToggles = &kSkipValidation;
+        toggles.enabledToggleCount = 1;
+        return toggles;
+    }
+
+  private:
+    static constexpr const char* kSkipValidation = "skip_validation";
+};
+
+TEST_F(CommandBufferEncodingSkipValidationTests,
+       ComputePassSyncScopeReuseFollowsLayoutAndIndirect) {
+    ExpectSyncScopeReuseFollowsLayoutAndIndirect(device, false);
 }
 
 // Indirect dispatch validation changes the bind groups in the middle
