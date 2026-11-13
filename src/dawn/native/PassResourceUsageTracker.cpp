@@ -268,7 +268,13 @@ ComputePassResourceUsageTracker::ComputePassResourceUsageTracker() = default;
 ComputePassResourceUsageTracker::~ComputePassResourceUsageTracker() = default;
 
 void ComputePassResourceUsageTracker::AddDispatch(SyncScopeResourceUsage scope) {
+    mUsage.dispatchScopeIndices.push_back(static_cast<uint32_t>(mUsage.dispatchUsages.size()));
     mUsage.dispatchUsages.push_back(std::move(scope));
+}
+
+void ComputePassResourceUsageTracker::AddDispatchWithLastScope() {
+    DAWN_ASSERT(!mUsage.dispatchScopeIndices.empty());
+    mUsage.dispatchScopeIndices.push_back(mUsage.dispatchScopeIndices.back());
 }
 
 void ComputePassResourceUsageTracker::AddReferencedBuffer(BufferBase* buffer) {

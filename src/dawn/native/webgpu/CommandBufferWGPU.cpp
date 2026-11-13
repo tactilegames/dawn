@@ -121,7 +121,7 @@ void EncodeComputePass(const DawnProcTable& wgpu,
 
             case Command::Dispatch: {
                 auto cmd = commands.NextCommand<DispatchCmd>();
-                PrepareResourcesForSyncScope(resourceUsages.dispatchUsages[nextDispatchNumber]);
+                PrepareResourcesForSyncScope(resourceUsages.GetDispatchUsage(nextDispatchNumber));
                 ++nextDispatchNumber;
                 wgpu.computePassEncoderDispatchWorkgroups(passEncoder, cmd->x, cmd->y, cmd->z);
                 break;
@@ -129,7 +129,7 @@ void EncodeComputePass(const DawnProcTable& wgpu,
 
             case Command::DispatchIndirect: {
                 auto cmd = commands.NextCommand<DispatchIndirectCmd>();
-                PrepareResourcesForSyncScope(resourceUsages.dispatchUsages[nextDispatchNumber]);
+                PrepareResourcesForSyncScope(resourceUsages.GetDispatchUsage(nextDispatchNumber));
                 ++nextDispatchNumber;
                 wgpu.computePassEncoderDispatchWorkgroupsIndirect(
                     passEncoder, ToBackend(cmd->indirectBuffer)->GetInnerHandle(),

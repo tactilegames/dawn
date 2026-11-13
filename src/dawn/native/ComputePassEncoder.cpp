@@ -185,6 +185,7 @@ Ref<ComputePassEncoder> ComputePassEncoder::MakeError(DeviceBase* device,
 
 void ComputePassEncoder::DestroyImpl(DestroyReason reason) {
     mCommandBufferState.End();
+    ForgetDirectDispatchSyncScope();
 
     // Ensure that the pass has exited. This is done for passes only since validation requires
     // they exit before destruction while bundles do not.
@@ -203,6 +204,7 @@ void ComputePassEncoder::APIEnd() {
 
     mEnded = true;
     mCommandBufferState.End();
+    ForgetDirectDispatchSyncScope();
 
     if (mEncodingContext->TryEncode(
             this,
@@ -293,7 +295,7 @@ void ComputePassEncoder::APIDispatchWorkgroups(uint32_t workgroupCountX,
 
             // Record the synchronization scope for Dispatch, which is just the current
             // bindgroups and resource table.
-            AddDispatchSyncScope();
+            AddDirectDispatchSyncScope();
 
             DispatchCmd* dispatch = allocator->Allocate<DispatchCmd>(Command::Dispatch);
             dispatch->x = workgroupCountX;
@@ -481,6 +483,8 @@ void ComputePassEncoder::APIDispatchWorkgroupsIndirect(BufferBase* indirectBuffe
             }
 
             AddDispatchSyncScope(std::move(scope));
+            // That scope also holds the indirect buffer.
+            ForgetDirectDispatchSyncScope();
 
             DispatchIndirectCmd* dispatch =
                 allocator->Allocate<DispatchIndirectCmd>(Command::DispatchIndirect);
@@ -615,6 +619,36 @@ void ComputePassEncoder::AddDispatchSyncScope(SyncScopeUsageTracker scope) {
         scope.SetUsedResourceTable(table);
     }
     mUsageTracker.AddDispatch(scope.AcquireSyncScopeUsage());
+}
+
+void ComputePassEncoder::AddDirectDispatchSyncScope() {
+    PipelineLayoutBase* layout = mCommandBufferState.GetPipelineLayout();
+    ResourceTableBase* table =
+        layout->UsesResourceTable() ? mCommandBufferState.GetResourceTable() : nullptr;
+
+    bool same = mLastDirectDispatchScopeValid && table == mLastDirectDispatchResourceTable;
+    PerBindGroup<BindGroupBase*> groups = {};
+    for (BindGroupIndex i : layout->GetBindGroupLayoutsMask()) {
+        groups[i] = mCommandBufferState.GetBindGroup(i);
+    }
+    for (BindGroupIndex i : Range(kMaxBindGroupsTyped)) {
+        same = same && groups[i] == mLastDirectDispatchBindGroups[i];
+        mLastDirectDispatchBindGroups[i] = groups[i];
+    }
+    mLastDirectDispatchResourceTable = table;
+
+    if (same) {
+        mUsageTracker.AddDispatchWithLastScope();
+        return;
+    }
+    AddDispatchSyncScope();
+    mLastDirectDispatchScopeValid = true;
+}
+
+void ComputePassEncoder::ForgetDirectDispatchSyncScope() {
+    mLastDirectDispatchBindGroups = {};
+    mLastDirectDispatchResourceTable = nullptr;
+    mLastDirectDispatchScopeValid = false;
 }
 
 void ComputePassEncoder::RestoreCommandBufferState(CommandBufferStateTracker state) {

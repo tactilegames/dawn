@@ -92,6 +92,8 @@ class ComputePassResourceUsageTracker {
     ~ComputePassResourceUsageTracker();
 
     void AddDispatch(SyncScopeResourceUsage scope);
+    // Records a Dispatch whose synchronization scope is the same as the previous Dispatch's.
+    void AddDispatchWithLastScope();
     void AddReferencedBuffer(BufferBase* buffer);
     void AddResourcesReferencedByBindGroup(BindGroupBase* group);
     void AddReferencedResourceTable(ResourceTableBase* table);

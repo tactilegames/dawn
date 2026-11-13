@@ -1644,7 +1644,7 @@ MaybeError CommandBuffer::EncodeComputePass(CommandRecordingContext* commandCont
                 storageBufferLengths.Apply(lastPipeline);
                 immediates.Apply(encoder, &storageBufferLengths);
                 MetalComputePassMakeResourcesResident(
-                    GetDevice(), encoder, resourceUsage.dispatchUsages[currentDispatch]);
+                    GetDevice(), encoder, resourceUsage.GetDispatchUsage(currentDispatch));
 
                 [encoder dispatchThreadgroups:MTLSizeMake(dispatch->x, dispatch->y, dispatch->z)
                         threadsPerThreadgroup:lastPipeline->GetLocalWorkGroupSize()];
@@ -1659,7 +1659,7 @@ MaybeError CommandBuffer::EncodeComputePass(CommandRecordingContext* commandCont
                 storageBufferLengths.Apply(lastPipeline);
                 immediates.Apply(encoder, &storageBufferLengths);
                 MetalComputePassMakeResourcesResident(
-                    GetDevice(), encoder, resourceUsage.dispatchUsages[currentDispatch]);
+                    GetDevice(), encoder, resourceUsage.GetDispatchUsage(currentDispatch));
 
                 Buffer* buffer = ToBackend(dispatch->indirectBuffer.Get());
                 buffer->TrackUsage();
