@@ -28,12 +28,14 @@
 #ifndef SRC_DAWN_NATIVE_OPENGL_DEVICEGL_H_
 #define SRC_DAWN_NATIVE_OPENGL_DEVICEGL_H_
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "src/dawn/common/Constants.h"
 #include "src/dawn/common/MutexProtected.h"
 #include "src/dawn/native/Device.h"
 #include "src/dawn/native/ExecutionQueue.h"
@@ -44,6 +46,7 @@
 #include "src/dawn/native/opengl/Forward.h"
 #include "src/dawn/native/opengl/GLFormat.h"
 #include "src/dawn/native/opengl/OpenGLFunctions.h"
+#include "src/dawn/native/opengl/UtilsGL.h"
 #include "src/utils/compiler.h"
 #include "src/utils/platform.h"
 
@@ -178,8 +181,8 @@ class Device final : public DeviceBase {
     // Execute the GL work immediately without flushing pending tasks.
     // This is used for tasks that don't depend on previous tasks such as resource creations.
     template <typename Fn>
-    auto ExecuteGL(ExecutionQueueBase::SubmitMode submitMode, Fn&& work)
-        -> std::invoke_result_t<Fn, const OpenGLFunctions&> {
+    auto ExecuteGL(ExecutionQueueBase::SubmitMode submitMode,
+                   Fn&& work) -> std::invoke_result_t<Fn, const OpenGLFunctions&> {
         ContextEGL::ScopedMakeCurrent scopedCurrentContext;
         DAWN_TRY_ASSIGN(scopedCurrentContext, mContext->MakeCurrent());
 
@@ -243,6 +246,24 @@ class Device final : public DeviceBase {
 
     const Buffer* GetInternalTextureBuiltinsUniformBuffer() const;
 
+    // Render passes reuse their framebuffer objects instead of creating and deleting one per pass:
+    // some drivers (PowerVR) block in glDeleteFramebuffers until the GPU has finished with it.
+    // Only called from GL work, which runs in order on the device's context.
+    struct RenderPassFramebufferKey {
+        std::array<FramebufferAttachment, kMaxColorAttachments + 1> attachments = {};
+        uint8_t attachmentCount = 0;
+
+        bool operator==(const RenderPassFramebufferKey&) const = default;
+    };
+    // Returns the framebuffer for `key`, generating it when none is cached; `created` says whether
+    // the caller must attach the images and set its draw buffers.
+    ResultOrError<GLuint> GetOrCreateRenderPassFramebuffer(const OpenGLFunctions& gl,
+                                                           const RenderPassFramebufferKey& key,
+                                                           bool* created);
+    // Deletes the cached framebuffers that `handle` is attached to, before `handle` is deleted
+    // and its name can be reused.
+    void ForgetFramebuffersUsing(const OpenGLFunctions& gl, GLuint handle, bool renderbuffer);
+
   private:
     Device(AdapterBase* adapter,
            const UnpackedPtr<DeviceDescriptor>& descriptor,
@@ -298,6 +319,16 @@ class Device final : public DeviceBase {
     const OpenGLFunctions mGL;
 
     MutexProtected<std::vector<GLWorkFunc>> mPendingGLWorkList;
+
+    struct CachedFramebuffer {
+        RenderPassFramebufferKey key;
+        GLuint framebuffer = 0;
+        uint64_t lastUse = 0;
+    };
+    // Bounded: a pass whose key is new evicts the least recently used one once this is full.
+    static constexpr size_t kMaxCachedFramebuffers = 64;
+    std::vector<CachedFramebuffer> mRenderPassFramebuffers;
+    uint64_t mRenderPassFramebufferUses = 0;
 
     GLFormatTable mFormatTable;
     std::unique_ptr<ContextEGL> mContext;

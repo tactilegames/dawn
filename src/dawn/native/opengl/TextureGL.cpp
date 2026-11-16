@@ -254,6 +254,24 @@ MaybeError FramebufferTextureHelper(const OpenGLFunctions& gl,
 
 }  // namespace
 
+MaybeError AttachToFramebuffer(const OpenGLFunctions& gl,
+                               GLenum target,
+                               const FramebufferAttachment& attachment) {
+    if (attachment.renderbuffer) {
+        DAWN_GL_TRY(gl, FramebufferRenderbuffer(target, attachment.attachment, GL_RENDERBUFFER,
+                                                attachment.handle));
+        return {};
+    }
+    if (attachment.multisampleRenderToTextureSamples != 0) {
+        DAWN_GL_TRY(gl, FramebufferTexture2DMultisampleEXT(
+                            target, attachment.attachment, attachment.textarget, attachment.handle,
+                            attachment.mipLevel, attachment.multisampleRenderToTextureSamples));
+        return {};
+    }
+    return FramebufferTextureHelper(gl, attachment.textarget, target, attachment.attachment,
+                                    attachment.handle, attachment.mipLevel, attachment.arrayLayer);
+}
+
 // Texture
 
 // static
@@ -361,7 +379,9 @@ void Texture::DestroyImpl(DestroyReason reason) {
             IgnoreErrors(ToBackend(GetDevice())
                              ->EnqueueDestroyGL(
                                  this, &Texture::GetRenderbufferHandle, reason,
-                                 [](const OpenGLFunctions& gl, GLuint handle) -> MaybeError {
+                                 [device = ToBackend(GetDevice())](const OpenGLFunctions& gl,
+                                                                   GLuint handle) -> MaybeError {
+                                     device->ForgetFramebuffersUsing(gl, handle, true);
                                      DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteRenderbuffers(1, &handle));
                                      return {};
                                  }));
@@ -369,7 +389,9 @@ void Texture::DestroyImpl(DestroyReason reason) {
             IgnoreErrors(ToBackend(GetDevice())
                              ->EnqueueDestroyGL(
                                  this, &Texture::GetTextureHandle, reason,
-                                 [](const OpenGLFunctions& gl, GLuint handle) -> MaybeError {
+                                 [device = ToBackend(GetDevice())](const OpenGLFunctions& gl,
+                                                                   GLuint handle) -> MaybeError {
+                                     device->ForgetFramebuffersUsing(gl, handle, false);
                                      DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteTextures(1, &handle));
                                      return {};
                                  }));
@@ -378,8 +400,26 @@ void Texture::DestroyImpl(DestroyReason reason) {
 }
 
 GLuint Texture::GetTextureHandle() const {
+    if (mStorage != nullptr) {
+        return mStorage->GetTextureHandle();
+    }
     DAWN_ASSERT(mTextureHandle != 0 && !IsRenderbuffer());
     return mTextureHandle;
+}
+
+// static
+Ref<Texture> Texture::CreateAlias(Device* device,
+                                  const UnpackedPtr<TextureDescriptor>& descriptor,
+                                  Ref<Texture> storage) {
+    DAWN_ASSERT(!storage->IsRenderbuffer());
+    Ref<Texture> texture = AcquireRef(new Texture(device, descriptor, 0, OwnsHandle::No));
+    texture->mStorage = std::move(storage);
+    return texture;
+}
+
+bool Texture::OwnsOrAliasesHandle() const {
+    return mOwnsHandle == OwnsHandle::Yes ||
+           (mStorage != nullptr && mStorage->OwnsOrAliasesHandle());
 }
 
 GLuint Texture::GetRenderbufferHandle() const {
@@ -513,8 +553,8 @@ MaybeError Texture::ClearTexture(const OpenGLFunctions& gl,
                     }
                     if (gl.IsAtLeastGL(4, 4)) {
                         DAWN_GL_TRY(
-                            gl, ClearTexSubImage(mTextureHandle, static_cast<GLint>(level), 0, 0,
-                                                 static_cast<GLint>(layer), mipSize.width,
+                            gl, ClearTexSubImage(GetTextureHandle(), static_cast<GLint>(level), 0,
+                                                 0, static_cast<GLint>(layer), mipSize.width,
                                                  mipSize.height, mipSize.depthOrArrayLayers,
                                                  glFormat.format, glFormat.type,
                                                  clearValue == TextureBase::ClearValue::Zero
@@ -747,7 +787,9 @@ void TextureView::DestroyImpl(DestroyReason reason) {
         IgnoreErrors(
             ToBackend(GetDevice())
                 ->EnqueueDestroyGL(this, &TextureView::GetTextureHandle, reason,
-                                   [](const OpenGLFunctions& gl, GLuint handle) -> MaybeError {
+                                   [device = ToBackend(GetDevice())](const OpenGLFunctions& gl,
+                                                                     GLuint handle) -> MaybeError {
+                                       device->ForgetFramebuffersUsing(gl, handle, false);
                                        DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteTextures(1, &handle));
                                        return {};
                                    }));
@@ -773,6 +815,14 @@ MaybeError TextureView::BindToFramebuffer(const OpenGLFunctions& gl,
                                           GLenum attachment,
                                           GLuint layer,
                                           std::optional<uint32_t> passSampleCount) {
+    return AttachToFramebuffer(gl, target,
+                               GetFramebufferAttachment(attachment, layer, passSampleCount));
+}
+
+FramebufferAttachment TextureView::GetFramebufferAttachment(
+    GLenum attachment,
+    GLuint layer,
+    std::optional<uint32_t> passSampleCount) const {
     DAWN_ASSERT(layer < static_cast<GLuint>(GetSingleSubresourceVirtualSize().depthOrArrayLayers));
 
     if (ToBackend(GetTexture())->IsRenderbuffer()) {
@@ -780,9 +830,12 @@ MaybeError TextureView::BindToFramebuffer(const OpenGLFunctions& gl,
         DAWN_ASSERT(GetBaseMipLevel() == 0 && GetLevelCount() == 1);
         DAWN_ASSERT(GetBaseArrayLayer() == 0 && GetLayerCount() == 1);
 
-        GLuint handle = ToBackend(GetTexture())->GetRenderbufferHandle();
-        DAWN_GL_TRY(gl, FramebufferRenderbuffer(target, attachment, GL_RENDERBUFFER, handle));
-        return {};
+        FramebufferAttachment result;
+        result.attachment = attachment;
+        result.handle = ToBackend(GetTexture())->GetRenderbufferHandle();
+        result.renderbuffer = true;
+        result.cacheable = ToBackend(GetTexture())->OwnsOrAliasesHandle();
+        return result;
     }
 
     // Use the base texture where possible to minimize the amount of copying required on GLES.
@@ -813,15 +866,18 @@ MaybeError TextureView::BindToFramebuffer(const OpenGLFunctions& gl,
 
     DAWN_ASSERT(textureHandle != 0);
 
+    FramebufferAttachment result;
+    result.attachment = attachment;
+    result.handle = textureHandle;
+    result.textarget = textarget;
+    result.mipLevel = mipLevel;
+    result.arrayLayer = arrayLayer;
     if (passSampleCount.has_value() && passSampleCount.value() != GetTexture()->GetSampleCount()) {
-        DAWN_GL_TRY(gl,
-                    FramebufferTexture2DMultisampleEXT(target, attachment, textarget, textureHandle,
-                                                       mipLevel, *passSampleCount));
-        return {};
+        result.multisampleRenderToTextureSamples = static_cast<GLsizei>(*passSampleCount);
     }
-
-    return FramebufferTextureHelper(gl, textarget, target, attachment, textureHandle, mipLevel,
-                                    arrayLayer);
+    result.cacheable = useOwnView ? mOwnsHandle == OwnsHandle::Yes
+                                  : ToBackend(GetTexture())->OwnsOrAliasesHandle();
+    return result;
 }
 
 GLenum TextureView::GetInternalFormat() const {

@@ -29,6 +29,7 @@
 
 #include <utility>
 
+#include "src/dawn/native/ChainUtils.h"
 #include "src/dawn/native/Surface.h"
 #include "src/dawn/native/opengl/ContextEGL.h"
 #include "src/dawn/native/opengl/DeviceGL.h"
@@ -175,9 +176,15 @@ MaybeError SwapChainEGL::PresentImpl() {
 ResultOrError<SwapChainTextureInfo> SwapChainEGL::GetCurrentTextureImpl() {
     // Create the fake surface texture that we'll blit from.
     TextureDescriptor desc = GetSwapChainBaseTextureDescriptor(this);
-    Ref<TextureBase> texture;
+    Ref<Texture>& storage = mStorage[mNextStorage];
+    mNextStorage = (mNextStorage + 1) % mStorage.size();
+    if (storage == nullptr) {
+        Ref<TextureBase> created;
+        DAWN_TRY_ASSIGN(created, GetDevice()->CreateTexture(&desc));
+        storage = ToBackend(created);
+    }
+    Ref<TextureBase> texture = Texture::CreateAlias(ToBackend(GetDevice()), Unpack(&desc), storage);
     Ref<TextureViewBase> view;
-    DAWN_TRY_ASSIGN(texture, GetDevice()->CreateTexture(&desc));
     DAWN_TRY_ASSIGN(view, GetDevice()->CreateTextureView(texture.Get()));
 
     mTexture = std::move(ToBackend(texture));
@@ -198,6 +205,13 @@ void SwapChainEGL::DetachFromSurfaceImpl() {
     }
 
     DeleteBlitFramebuffer();
+
+    for (Ref<Texture>& storage : mStorage) {
+        if (storage != nullptr) {
+            storage->APIDestroy();
+            storage = nullptr;
+        }
+    }
 
     if (mTexture != nullptr) {
         mTexture->APIDestroy();

@@ -1330,56 +1330,64 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                                             const OpenGLFunctions& gl,
                                             PassIndex renderPassIndex) {
     GLuint fbo = 0;
+    bool ownsFbo = false;
 
     const IndirectDrawMetadata& metadata = GetIndirectDrawMetadata()[renderPassIndex];
     IndirectDrawIndex indirectDrawIndex{0u};
 
-    // Create the framebuffer used for this render pass and calls the correct glDrawBuffers
+    // Get the framebuffer used for this render pass, and on first use attach its images and set
+    // its glDrawBuffers (framebuffer state the cached object keeps).
     {
         // TODO(kainino@chromium.org): This is added to possibly work around an issue seen on
         // Windows/Intel. It should break any feedback loop before the clears, even if there
         // shouldn't be any negative effects from this. Investigate whether it's actually
         // needed.
         DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, 0));
-        // TODO(kainino@chromium.org): possible future optimization: create these framebuffers
-        // at Framebuffer build time (or maybe CommandBuffer build time) so they don't have to
-        // be created and destroyed at draw time.
-        DAWN_GL_TRY(gl, GenFramebuffers(1, &fbo));
-        DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo));
 
+        Device::RenderPassFramebufferKey key;
         // Mapping from attachmentSlot to GL framebuffer attachment points. Defaults to zero
         // (GL_NONE).
         PerColorAttachment<GLenum> drawBuffers = {};
-
-        // Construct GL framebuffer
-
         ColorAttachmentIndex attachmentCount{};
         for (auto i : renderPass->attachmentState->GetColorAttachmentsMask()) {
             TextureView* textureView = ToBackend(renderPass->colorAttachments[i].view.Get());
             GLenum glAttachment = GL_COLOR_ATTACHMENT0 + static_cast<uint8_t>(i);
-
-            // Attach color buffers.
-            DAWN_TRY(textureView->BindToFramebuffer(gl, GL_DRAW_FRAMEBUFFER, glAttachment,
-                                                    renderPass->colorAttachments[i].depthSlice,
-                                                    renderPass->attachmentState->GetSampleCount()));
+            key.attachments[key.attachmentCount++] = textureView->GetFramebufferAttachment(
+                glAttachment, renderPass->colorAttachments[i].depthSlice,
+                renderPass->attachmentState->GetSampleCount());
             drawBuffers[i] = glAttachment;
             attachmentCount = i.PlusOne();
         }
-        DAWN_GL_TRY(gl, DrawBuffers(static_cast<uint8_t>(attachmentCount), drawBuffers.data()));
-
         if (renderPass->attachmentState->HasDepthStencilAttachment()) {
             TextureView* textureView = ToBackend(renderPass->depthStencilAttachment.view.Get());
             const Format& format = textureView->GetTexture()->GetFormat();
+            key.attachments[key.attachmentCount++] = textureView->GetFramebufferAttachment(
+                DepthStencilAttachmentPoint(format), 0,
+                renderPass->attachmentState->GetSampleCount());
+        }
 
-            // Attach depth/stencil buffer.
-            GLenum glAttachment = DepthStencilAttachmentPoint(format);
+        bool cacheable = true;
+        for (uint8_t a = 0; a < key.attachmentCount; ++a) {
+            cacheable &= key.attachments[a].cacheable;
+        }
+        bool created = true;
+        if (cacheable) {
+            DAWN_TRY_ASSIGN(
+                fbo, ToBackend(GetDevice())->GetOrCreateRenderPassFramebuffer(gl, key, &created));
+        } else {
+            DAWN_GL_TRY(gl, GenFramebuffers(1, &fbo));
+        }
+        ownsFbo = !cacheable;
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo));
 
-            DAWN_TRY(textureView->BindToFramebuffer(gl, GL_DRAW_FRAMEBUFFER, glAttachment, 0,
-                                                    renderPass->attachmentState->GetSampleCount()));
+        if (created) {
+            for (uint8_t a = 0; a < key.attachmentCount; ++a) {
+                DAWN_TRY(AttachToFramebuffer(gl, GL_DRAW_FRAMEBUFFER, key.attachments[a]));
+            }
+            DAWN_GL_TRY(gl, DrawBuffers(static_cast<uint8_t>(attachmentCount), drawBuffers.data()));
+            DAWN_TRY(CheckFramebufferComplete(gl, GL_DRAW_FRAMEBUFFER));
         }
     }
-
-    DAWN_TRY(CheckFramebufferComplete(gl, GL_DRAW_FRAMEBUFFER));
 
     // Set defaults for dynamic state before executing clears and commands.
     PersistentPipelineState persistentPipelineState;
@@ -1668,7 +1676,11 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                                         checked_cast<GLsizei>(attachmentsToDiscard.size()),
                                         attachmentsToDiscard.data()));
                 }
-                DAWN_GL_TRY(gl, DeleteFramebuffers(1, &fbo));
+                if (ownsFbo) {
+                    DAWN_GL_TRY(gl, DeleteFramebuffers(1, &fbo));
+                } else {
+                    DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
+                }
                 return {};
             }
 

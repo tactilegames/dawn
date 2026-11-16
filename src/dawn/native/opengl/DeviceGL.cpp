@@ -27,6 +27,7 @@
 
 #include "src/dawn/native/opengl/DeviceGL.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "src/dawn/native/BackendConnection.h"
@@ -513,6 +514,55 @@ MaybeError Device::CopyFromStagingToTextureImpl(BufferBase* source,
                                                 const Extent3D& copySizePixels) {
     // If implemented, be sure to call SynchronizeTextureBeforeUse on the destination texture.
     return DAWN_UNIMPLEMENTED_ERROR("Device unable to copy from staging buffer to texture.");
+}
+
+ResultOrError<GLuint> Device::GetOrCreateRenderPassFramebuffer(const OpenGLFunctions& gl,
+                                                               const RenderPassFramebufferKey& key,
+                                                               bool* created) {
+    uint64_t use = ++mRenderPassFramebufferUses;
+    for (CachedFramebuffer& cached : mRenderPassFramebuffers) {
+        if (cached.key == key) {
+            cached.lastUse = use;
+            *created = false;
+            return cached.framebuffer;
+        }
+    }
+
+    if (mRenderPassFramebuffers.size() >= kMaxCachedFramebuffers) {
+        auto oldest =
+            std::min_element(mRenderPassFramebuffers.begin(), mRenderPassFramebuffers.end(),
+                             [](const CachedFramebuffer& a, const CachedFramebuffer& b) {
+                                 return a.lastUse < b.lastUse;
+                             });
+        DAWN_GL_TRY(gl, DeleteFramebuffers(1, &oldest->framebuffer));
+        *oldest = mRenderPassFramebuffers.back();
+        mRenderPassFramebuffers.pop_back();
+    }
+
+    GLuint framebuffer = 0;
+    DAWN_GL_TRY(gl, GenFramebuffers(1, &framebuffer));
+    mRenderPassFramebuffers.push_back({key, framebuffer, use});
+    *created = true;
+    return framebuffer;
+}
+
+void Device::ForgetFramebuffersUsing(const OpenGLFunctions& gl, GLuint handle, bool renderbuffer) {
+    for (size_t i = 0; i < mRenderPassFramebuffers.size();) {
+        const RenderPassFramebufferKey& key = mRenderPassFramebuffers[i].key;
+        bool uses = false;
+        for (uint8_t a = 0; a < key.attachmentCount; ++a) {
+            uses |= key.attachments[a].handle == handle &&
+                    key.attachments[a].renderbuffer == renderbuffer;
+        }
+        if (!uses) {
+            ++i;
+            continue;
+        }
+        DAWN_GL_TRY_IGNORE_ERRORS(gl,
+                                  DeleteFramebuffers(1, &mRenderPassFramebuffers[i].framebuffer));
+        mRenderPassFramebuffers[i] = mRenderPassFramebuffers.back();
+        mRenderPassFramebuffers.pop_back();
+    }
 }
 
 void Device::DestroyImpl(DestroyReason reason) {

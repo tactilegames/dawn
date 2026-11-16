@@ -28,6 +28,8 @@
 #ifndef SRC_DAWN_NATIVE_OPENGL_SWAPCHAINEGL_H_
 #define SRC_DAWN_NATIVE_OPENGL_SWAPCHAINEGL_H_
 
+#include <array>
+
 #include "src/dawn/common/egl_platform.h"
 #include "src/dawn/native/SwapChain.h"
 #include "src/dawn/native/opengl/opengl_platform.h"
@@ -59,6 +61,11 @@ class SwapChainEGL final : public SwapChainBase {
     Ref<Texture> mTexture;
     Ref<TextureView> mTextureView;
     GLuint mBlitFbo = 0;
+    // GL textures the per-frame textures alias, used in turn: allocating and deleting one every
+    // frame is costly on some drivers, and so is the render-pass framebuffer each new one needs.
+    // Two, so a frame does not render into the texture the previous present still blits from.
+    std::array<Ref<Texture>, 2> mStorage;
+    size_t mNextStorage = 0;
 
     // Deletes the blit framebuffer, if any, on the device's GL queue.
     void DeleteBlitFramebuffer();
