@@ -58,6 +58,28 @@ const char* GLFramebufferStatusAsString(GLenum status);
 // operations having taken effect never proceed past an incomplete framebuffer.
 MaybeError CheckFramebufferComplete(const OpenGLFunctions& gl, GLenum target);
 
+// One image attached to a framebuffer: what TextureView::BindToFramebuffer attaches, as a value
+// that render-pass framebuffers are cached by.
+struct FramebufferAttachment {
+    GLenum attachment = GL_NONE;
+    GLuint handle = 0;
+    GLenum textarget = GL_NONE;
+    GLuint mipLevel = 0;
+    GLuint arrayLayer = 0;
+    // Non-zero when attached with glFramebufferTexture2DMultisampleEXT.
+    GLsizei multisampleRenderToTextureSamples = 0;
+    bool renderbuffer = false;
+    // False when the GL object is shared outside Dawn (an imported EGLImage or shared texture
+    // memory): such passes are not cached.
+    bool cacheable = true;
+
+    bool operator==(const FramebufferAttachment&) const = default;
+};
+
+MaybeError AttachToFramebuffer(const OpenGLFunctions& gl,
+                               GLenum target,
+                               const FramebufferAttachment& attachment);
+
 // Clear all errors on the context, emits logs only
 void ClearErrors(const OpenGLFunctions& gl,
                  const char* file,

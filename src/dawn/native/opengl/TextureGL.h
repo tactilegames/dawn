@@ -29,6 +29,7 @@
 #define SRC_DAWN_NATIVE_OPENGL_TEXTUREGL_H_
 
 #include "src/dawn/native/Texture.h"
+#include "src/dawn/native/opengl/UtilsGL.h"
 #include "src/dawn/native/opengl/opengl_platform.h"
 
 namespace dawn::native::opengl {
@@ -56,10 +57,19 @@ class Texture final : public TextureBase {
             GLuint handle,
             OwnsHandle ownsHandle);
 
+    // A texture that uses `storage`'s GL texture instead of allocating its own, and never deletes
+    // it: the GLES swapchain hands one out per frame over storage it keeps.
+    static Ref<Texture> CreateAlias(Device* device,
+                                    const UnpackedPtr<TextureDescriptor>& descriptor,
+                                    Ref<Texture> storage);
+
     GLuint GetTextureHandle() const;
     GLuint GetRenderbufferHandle() const;
     GLenum GetGLTarget() const;
     const GLFormat& GetGLFormat() const;
+    // Whether render passes may keep a framebuffer attached to this texture between passes: only
+    // when Dawn alone creates and deletes its GL object (not EGLImage or shared texture memory).
+    bool CanCacheFramebuffers() const;
 
     MaybeError EnsureSubresourceContentInitialized(const OpenGLFunctions& gl,
                                                    const SubresourceRange& range);
@@ -79,6 +89,7 @@ class Texture final : public TextureBase {
     GLuint mRenderbufferHandle;
     OwnsHandle mOwnsHandle = OwnsHandle::No;
     GLenum mTarget;
+    Ref<Texture> mStorage;
 };
 
 class TextureView final : public TextureViewBase {
@@ -95,6 +106,10 @@ class TextureView final : public TextureViewBase {
                                  GLenum attachment,
                                  GLuint layer = 0,
                                  std::optional<uint32_t> passSampleCount = std::nullopt);
+    FramebufferAttachment GetFramebufferAttachment(
+        GLenum attachment,
+        GLuint layer = 0,
+        std::optional<uint32_t> passSampleCount = std::nullopt) const;
 
   private:
     TextureView(TextureBase* texture, const UnpackedPtr<TextureViewDescriptor>& descriptor);
