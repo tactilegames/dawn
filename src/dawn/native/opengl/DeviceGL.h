@@ -263,6 +263,8 @@ class Device final : public DeviceBase {
     // Deletes the cached framebuffers that `handle` is attached to, before `handle` is deleted
     // and its name can be reused.
     void ForgetFramebuffersUsing(const OpenGLFunctions& gl, GLuint handle, bool renderbuffer);
+    // Deletes one cached framebuffer, when its first use failed to set it up.
+    void ForgetRenderPassFramebuffer(const OpenGLFunctions& gl, GLuint framebuffer);
 
   private:
     Device(AdapterBase* adapter,

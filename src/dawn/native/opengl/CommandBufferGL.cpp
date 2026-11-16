@@ -1381,11 +1381,21 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
         DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo));
 
         if (created) {
-            for (uint8_t a = 0; a < key.attachmentCount; ++a) {
-                DAWN_TRY(AttachToFramebuffer(gl, GL_DRAW_FRAMEBUFFER, key.attachments[a]));
+            MaybeError setup = [&]() -> MaybeError {
+                for (uint8_t a = 0; a < key.attachmentCount; ++a) {
+                    DAWN_TRY(AttachToFramebuffer(gl, GL_DRAW_FRAMEBUFFER, key.attachments[a]));
+                }
+                DAWN_GL_TRY(gl,
+                            DrawBuffers(static_cast<uint8_t>(attachmentCount), drawBuffers.data()));
+                return CheckFramebufferComplete(gl, GL_DRAW_FRAMEBUFFER);
+            }();
+            if (setup.IsError()) {
+                // A later pass with the same attachments must not reuse it half set up.
+                if (cacheable) {
+                    ToBackend(GetDevice())->ForgetRenderPassFramebuffer(gl, fbo);
+                }
+                return setup;
             }
-            DAWN_GL_TRY(gl, DrawBuffers(static_cast<uint8_t>(attachmentCount), drawBuffers.data()));
-            DAWN_TRY(CheckFramebufferComplete(gl, GL_DRAW_FRAMEBUFFER));
         }
     }
 

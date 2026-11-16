@@ -417,9 +417,11 @@ Ref<Texture> Texture::CreateAlias(Device* device,
     return texture;
 }
 
-bool Texture::OwnsOrAliasesHandle() const {
-    return mOwnsHandle == OwnsHandle::Yes ||
-           (mStorage != nullptr && mStorage->OwnsOrAliasesHandle());
+bool Texture::CanCacheFramebuffers() const {
+    if (mStorage != nullptr) {
+        return mStorage->CanCacheFramebuffers();
+    }
+    return mOwnsHandle == OwnsHandle::Yes && GetSharedResourceMemoryContents() == nullptr;
 }
 
 GLuint Texture::GetRenderbufferHandle() const {
@@ -834,7 +836,7 @@ FramebufferAttachment TextureView::GetFramebufferAttachment(
         result.attachment = attachment;
         result.handle = ToBackend(GetTexture())->GetRenderbufferHandle();
         result.renderbuffer = true;
-        result.cacheable = ToBackend(GetTexture())->OwnsOrAliasesHandle();
+        result.cacheable = ToBackend(GetTexture())->CanCacheFramebuffers();
         return result;
     }
 
@@ -875,8 +877,9 @@ FramebufferAttachment TextureView::GetFramebufferAttachment(
     if (passSampleCount.has_value() && passSampleCount.value() != GetTexture()->GetSampleCount()) {
         result.multisampleRenderToTextureSamples = static_cast<GLsizei>(*passSampleCount);
     }
-    result.cacheable = useOwnView ? mOwnsHandle == OwnsHandle::Yes
-                                  : ToBackend(GetTexture())->OwnsOrAliasesHandle();
+    result.cacheable = useOwnView ? mOwnsHandle == OwnsHandle::Yes &&
+                                        GetTexture()->GetSharedResourceMemoryContents() == nullptr
+                                  : ToBackend(GetTexture())->CanCacheFramebuffers();
     return result;
 }
 

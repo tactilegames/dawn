@@ -565,6 +565,17 @@ void Device::ForgetFramebuffersUsing(const OpenGLFunctions& gl, GLuint handle, b
     }
 }
 
+void Device::ForgetRenderPassFramebuffer(const OpenGLFunctions& gl, GLuint framebuffer) {
+    for (size_t i = 0; i < mRenderPassFramebuffers.size(); ++i) {
+        if (mRenderPassFramebuffers[i].framebuffer == framebuffer) {
+            DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteFramebuffers(1, &framebuffer));
+            mRenderPassFramebuffers[i] = mRenderPassFramebuffers.back();
+            mRenderPassFramebuffers.pop_back();
+            return;
+        }
+    }
+}
+
 void Device::DestroyImpl(DestroyReason reason) {
     DAWN_ASSERT(GetState() == State::Disconnected);
 

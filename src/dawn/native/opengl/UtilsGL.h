@@ -69,8 +69,8 @@ struct FramebufferAttachment {
     // Non-zero when attached with glFramebufferTexture2DMultisampleEXT.
     GLsizei multisampleRenderToTextureSamples = 0;
     bool renderbuffer = false;
-    // False when the handle belongs to something outside Dawn (an imported EGLImage or shared
-    // texture memory), which may delete it without Dawn knowing: such passes are not cached.
+    // False when the GL object is shared outside Dawn (an imported EGLImage or shared texture
+    // memory): such passes are not cached.
     bool cacheable = true;
 
     bool operator==(const FramebufferAttachment&) const = default;

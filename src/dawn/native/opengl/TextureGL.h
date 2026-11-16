@@ -67,8 +67,9 @@ class Texture final : public TextureBase {
     GLuint GetRenderbufferHandle() const;
     GLenum GetGLTarget() const;
     const GLFormat& GetGLFormat() const;
-    // Whether Dawn deletes this texture's GL object (itself or through the texture it aliases).
-    bool OwnsOrAliasesHandle() const;
+    // Whether render passes may keep a framebuffer attached to this texture between passes: only
+    // when Dawn alone creates and deletes its GL object (not EGLImage or shared texture memory).
+    bool CanCacheFramebuffers() const;
 
     MaybeError EnsureSubresourceContentInitialized(const OpenGLFunctions& gl,
                                                    const SubresourceRange& range);
