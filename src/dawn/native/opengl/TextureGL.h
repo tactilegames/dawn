@@ -28,6 +28,7 @@
 #ifndef SRC_DAWN_NATIVE_OPENGL_TEXTUREGL_H_
 #define SRC_DAWN_NATIVE_OPENGL_TEXTUREGL_H_
 
+#include "partition_alloc/pointers/raw_ptr.h"
 #include "src/dawn/native/Texture.h"
 #include "src/dawn/native/opengl/opengl_platform.h"
 
@@ -42,6 +43,35 @@ enum class OwnsHandle : uint8_t {
     Yes,
     No,
 };
+
+class Texture;
+
+// A swapchain texture drawn straight into its EGL window surface (FBO 0). Render passes that can
+// target the window do; the others, and copies, use the backing texture, and the content moves
+// between the two by blits when a pass loads it or a copy reads it. Both keep Dawn's storage order,
+// so the window shows the frame bottom-up (Toggle::GLDrawSwapChainIntoWindow).
+struct DefaultFramebufferAlias {
+    DefaultFramebufferAlias();
+    ~DefaultFramebufferAlias();
+
+    GLuint backingTexture = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool windowHasDepthStencil = false;
+    GLuint copyFramebuffer = 0;
+    bool loggedTexturePass = false;
+
+    // Per frame: where the frame's content is current.
+    bool contentInWindow = false;
+    bool contentInTexture = false;
+    // The depth-stencil texture whose content lives in the window's depth-stencil buffer.
+    Ref<Texture> depthStencil;
+};
+
+MaybeError CopyWindowColor(const OpenGLFunctions& gl, DefaultFramebufferAlias* alias, bool toWindow);
+// Copies the window's depth-stencil into the aliased depth texture when its content is kept, and
+// stops aliasing it.
+MaybeError ReleaseWindowDepthStencil(const OpenGLFunctions& gl, DefaultFramebufferAlias* alias);
 
 class Texture final : public TextureBase {
   public:
@@ -67,6 +97,14 @@ class Texture final : public TextureBase {
     MaybeError SynchronizeTextureBeforeUse();
     bool IsRenderbuffer() const;
 
+    void SetDefaultFramebufferAlias(DefaultFramebufferAlias* alias);
+    DefaultFramebufferAlias* GetDefaultFramebufferAlias() const;
+    // The alias whose window depth-stencil buffer holds this depth texture's content, if any.
+    void SetWindowDepthStencilOf(DefaultFramebufferAlias* alias);
+    DefaultFramebufferAlias* GetWindowDepthStencilOf() const;
+    // Before a copy reads the swapchain texture.
+    MaybeError SyncFromWindow(const OpenGLFunctions& gl);
+
   private:
     ~Texture() override;
 
@@ -79,6 +117,9 @@ class Texture final : public TextureBase {
     GLuint mRenderbufferHandle;
     OwnsHandle mOwnsHandle = OwnsHandle::No;
     GLenum mTarget;
+    // Owned by the swapchain, which clears both before the frame's texture is destroyed.
+    raw_ptr<DefaultFramebufferAlias> mDefaultFramebufferAlias = nullptr;
+    raw_ptr<DefaultFramebufferAlias> mWindowDepthStencilOf = nullptr;
 };
 
 class TextureView final : public TextureViewBase {

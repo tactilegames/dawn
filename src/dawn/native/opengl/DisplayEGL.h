@@ -73,6 +73,11 @@ class DisplayEGL : public RefCounted {
                            wgpu::TextureFormat color,
                            wgpu::TextureFormat depthStencil = wgpu::TextureFormat::Undefined) const;
 
+    // The EGLConfig of window surfaces, and of the context without EGL_KHR_no_config_context. On
+    // Android it has a depth-stencil buffer when one is offered, which a swapchain drawing straight
+    // into its window lends to depth-stencil attachments that never leave render passes.
+    EGLConfig ChooseWindowConfig(wgpu::TextureFormat color, bool* hasDepthStencil) const;
+
   private:
     MaybeError InitializeWithDynamicLoading(const char* libName,
                                             std::span<const std::string> searchPaths);

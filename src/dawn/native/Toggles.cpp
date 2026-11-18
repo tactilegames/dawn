@@ -957,6 +957,12 @@ static constexpr ToggleEnumAndInfoList kToggleNameAndInfoList = {{
       "Some ImgTec drivers only report 64, which is below the WebGPU requirement. Enabling this "
       "toggle accepts the limit of 64 instead of rejecting the adapter entirely.",
       "https://g-issues.chromium.org/issues/559589664", ToggleStage::Instance}},
+    {Toggle::GLDrawSwapChainIntoWindow,
+     {"gl_draw_swapchain_into_window",
+      "On Android, render passes into a swapchain texture draw straight into the window instead of "
+      "into a texture that is blitted, flipped, into the window at present. The window then shows "
+      "the texture's rows bottom-up, so the application draws its frame vertically mirrored.",
+      "https://github.com/tactilegames/dawn", ToggleStage::Device}},
 
     // Comment to separate the }} so it is clearer what to copy-paste to add a toggle.
 }};

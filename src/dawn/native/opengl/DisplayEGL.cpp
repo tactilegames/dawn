@@ -32,6 +32,7 @@
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_split.h"
+#include "src/utils/platform.h"
 
 namespace dawn::native::opengl {
 
@@ -153,6 +154,19 @@ absl::Span<const wgpu::TextureFormat> DisplayEGL::GetPotentialSurfaceFormats() c
         return {kFormatsWithNoConfigContext};
     }
     return {kFormatWhenConfigRequired};
+}
+
+EGLConfig DisplayEGL::ChooseWindowConfig(wgpu::TextureFormat color, bool* hasDepthStencil) const {
+#if DAWN_PLATFORM_IS(ANDROID)
+    EGLConfig withDepthStencil =
+        ChooseConfig(EGL_WINDOW_BIT, color, wgpu::TextureFormat::Depth24PlusStencil8);
+    if (withDepthStencil != kNoConfig) {
+        *hasDepthStencil = true;
+        return withDepthStencil;
+    }
+#endif
+    *hasDepthStencil = false;
+    return ChooseConfig(EGL_WINDOW_BIT, color);
 }
 
 EGLConfig DisplayEGL::ChooseConfig(EGLint surfaceType,

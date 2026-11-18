@@ -30,6 +30,7 @@
 
 #include "src/dawn/common/egl_platform.h"
 #include "src/dawn/native/SwapChain.h"
+#include "src/dawn/native/opengl/TextureGL.h"
 #include "src/dawn/native/opengl/opengl_platform.h"
 
 namespace dawn::native::opengl {
@@ -59,9 +60,19 @@ class SwapChainEGL final : public SwapChainBase {
     Ref<Texture> mTexture;
     Ref<TextureView> mTextureView;
     GLuint mBlitFbo = 0;
+    bool mWindowHasDepthStencil = false;
 
     // Deletes the blit framebuffer, if any, on the device's GL queue.
     void DeleteBlitFramebuffer();
+
+    // Drawing straight into the window (Toggle::GLDrawSwapChainIntoWindow): the frame keeps Dawn's
+    // storage order and needs no reverse-Y blit to present; the application mirrors it.
+    bool mDirect = false;
+    // This frame draws into the window (its size matches the configuration).
+    bool mFrameInWindow = false;
+    DefaultFramebufferAlias mAlias;
+    void DeleteBackingTexture();
+    MaybeError EndFrameInWindow(const OpenGLFunctions& gl);
 
     MaybeError PresentImpl() override;
     ResultOrError<SwapChainTextureInfo> GetCurrentTextureImpl() override;

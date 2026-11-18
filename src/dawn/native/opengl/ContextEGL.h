@@ -71,6 +71,11 @@ class ContextEGL : NonMovable {
     };
     [[nodiscard]] ScopedSetCurrentSurface SetCurrentSurfaceScope(EGLSurface surface);
 
+    // The surface current outside a ScopedSetCurrentSurface, instead of the offscreen one: a
+    // swapchain drawing straight into its window keeps the window current for its frame.
+    void SetFrameSurface(EGLSurface surface);
+    EGLSurface GetFrameSurface() const;
+
     // TODO(451928481): remove this once all call sites use MakeCurrent
     void DeprecatedMakeCurrent();
 
@@ -126,6 +131,8 @@ class ContextEGL : NonMovable {
     Ref<DisplayEGL> mDisplay;
     ContextState mState;
     EGLSurface mOffscreenSurface = EGL_NO_SURFACE;
+    EGLSurface mFrameSurface = EGL_NO_SURFACE;
+    EGLSurface GetRestingSurface() const;
     bool mForceES31AndMinExtensions = false;
 
     // Flag to allow this context to be used on multiple threads. A GL context cannot be used on
