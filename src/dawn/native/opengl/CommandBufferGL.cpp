@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "partition_alloc/pointers/raw_ptr.h"
+#include "src/dawn/common/Math.h"
 #include "src/dawn/common/MatchVariant.h"
 #include "src/dawn/common/Range.h"
 #include "src/dawn/native/BindGroup.h"
@@ -58,6 +59,7 @@
 #include "src/dawn/native/opengl/TextureGL.h"
 #include "src/dawn/native/opengl/UtilsGL.h"
 #include "src/utils/compiler.h"
+#include "src/utils/log.h"
 #include "src/utils/numeric.h"
 
 namespace dawn::native::opengl {
@@ -644,6 +646,50 @@ class BindGroupTracker : public BindGroupTrackerBase<false> {
     VectorDirtyRangeInfo mDirtyRange;
 };
 
+// A render pass draws into the window (FBO 0) when its only colour attachment is a swapchain
+// texture aliased to it, and its depth-stencil attachment, if any, can live in the window's
+// depth-stencil buffer: nothing but render passes can read it, and its content is cleared here or
+// already in the window.
+struct WindowTarget {
+    DefaultFramebufferAlias* alias = nullptr;
+    bool depthStencil = false;
+};
+
+WindowTarget GetWindowTarget(const BeginRenderPassCmd* renderPass) {
+    ColorAttachmentMask colors = renderPass->attachmentState->GetColorAttachmentsMask();
+    ColorAttachmentIndex first(uint8_t(0));
+    if (colors.count() != 1 || !colors[first] ||
+        renderPass->attachmentState->GetSampleCount() != 1) {
+        return {};
+    }
+    const RenderPassColorAttachmentInfo& color = renderPass->colorAttachments[first];
+    DefaultFramebufferAlias* alias =
+        ToBackend(color.view->GetTexture())->GetDefaultFramebufferAlias();
+    if (alias == nullptr || color.resolveTarget != nullptr) {
+        return {};
+    }
+    if (!renderPass->attachmentState->HasDepthStencilAttachment()) {
+        return {alias, false};
+    }
+    const RenderPassDepthStencilAttachmentInfo& ds = renderPass->depthStencilAttachment;
+    Texture* depth = ToBackend(ds.view->GetTexture());
+    const Format& format = depth->GetFormat();
+    bool fits = alias->windowHasDepthStencil &&
+                (format.format == wgpu::TextureFormat::Depth24PlusStencil8 ||
+                 format.format == wgpu::TextureFormat::Depth24Plus) &&
+                IsSubset(depth->GetInternalUsage(), wgpu::TextureUsage::RenderAttachment |
+                                                        wgpu::TextureUsage::TransientAttachment) &&
+                depth->GetNumMipLevels() == 1 && depth->GetArrayLayers() == 1 &&
+                depth->GetWidth(Aspect::Depth) == alias->width &&
+                depth->GetHeight(Aspect::Depth) == alias->height;
+    bool cleared = ds.depthLoadOp == wgpu::LoadOp::Clear &&
+                   (!format.HasStencil() || ds.stencilLoadOp == wgpu::LoadOp::Clear);
+    if (!fits || !(cleared || alias->depthStencil.Get() == depth)) {
+        return {};
+    }
+    return {alias, true};
+}
+
 MaybeError ResolveMultisampledRenderTargets(const OpenGLFunctions& gl,
                                             const BeginRenderPassCmd* renderPass) {
     DAWN_ASSERT(renderPass != nullptr);
@@ -669,13 +715,26 @@ MaybeError ResolveMultisampledRenderTargets(const OpenGLFunctions& gl,
 
             TextureView* resolveView =
                 ToBackend(renderPass->colorAttachments[i].resolveTarget.Get());
-            DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, writeFbo));
-            DAWN_TRY(resolveView->BindToFramebuffer(gl, GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0));
+            DefaultFramebufferAlias* window =
+                ToBackend(resolveView->GetTexture())->GetDefaultFramebufferAlias();
+            if (window != nullptr) {
+                DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
+                GLenum back = GL_BACK;
+                DAWN_GL_TRY(gl, DrawBuffers(1, &back));
+            } else {
+                DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, writeFbo));
+                DAWN_TRY(resolveView->BindToFramebuffer(gl, GL_DRAW_FRAMEBUFFER,
+                                                        GL_COLOR_ATTACHMENT0));
+            }
             DAWN_TRY(CheckFramebufferComplete(gl, GL_READ_FRAMEBUFFER));
             DAWN_TRY(CheckFramebufferComplete(gl, GL_DRAW_FRAMEBUFFER));
             DAWN_GL_TRY(gl, BlitFramebuffer(0, 0, renderPass->width, renderPass->height, 0, 0,
                                             renderPass->width, renderPass->height,
                                             GL_COLOR_BUFFER_BIT, GL_NEAREST));
+            if (window != nullptr) {
+                window->contentInWindow = true;
+                window->contentInTexture = false;
+            }
         }
     }
 
@@ -932,6 +991,7 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
 
                 DAWN_TRY(buffer->EnsureDataInitializedAsDestination(copy));
                 DAWN_TRY(texture->SynchronizeTextureBeforeUse());
+                DAWN_TRY(texture->SyncFromWindow(gl));
 
                 SubresourceRange subresources =
                     GetSubresourcesAffectedByCopy(src, copy->copySize.ToExtent3D());
@@ -1118,6 +1178,7 @@ MaybeError CommandBuffer::Execute(const OpenGLFunctions& gl) {
 
                 DAWN_TRY(srcTexture->SynchronizeTextureBeforeUse());
                 DAWN_TRY(dstTexture->SynchronizeTextureBeforeUse());
+                DAWN_TRY(srcTexture->SyncFromWindow(gl));
 
                 SubresourceRange srcRange =
                     GetSubresourcesAffectedByCopy(src, copy->copySize.ToExtent3D());
@@ -1334,8 +1395,63 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
     const IndirectDrawMetadata& metadata = GetIndirectDrawMetadata()[renderPassIndex];
     IndirectDrawIndex indirectDrawIndex{0u};
 
-    // Create the framebuffer used for this render pass and calls the correct glDrawBuffers
-    {
+    // The swapchain texture's content moves between the window and its backing texture before a
+    // pass that loads it on the other side.
+    WindowTarget window = GetWindowTarget(renderPass);
+    DefaultFramebufferAlias* swapchainColor = nullptr;
+    wgpu::LoadOp swapchainLoadOp = wgpu::LoadOp::Undefined;
+    for (auto i : renderPass->attachmentState->GetColorAttachmentsMask()) {
+        Texture* texture = ToBackend(renderPass->colorAttachments[i].view->GetTexture());
+        if (texture->GetDefaultFramebufferAlias() != nullptr) {
+            swapchainColor = texture->GetDefaultFramebufferAlias();
+            swapchainLoadOp = renderPass->colorAttachments[i].loadOp;
+        }
+    }
+    if (swapchainColor != nullptr && window.alias == nullptr && !swapchainColor->loggedTexturePass) {
+        swapchainColor->loggedTexturePass = true;
+        InfoLog() << "SwapChainEGL: a render pass draws the frame through its backing texture "
+                     "(more colour attachments, or a depth-stencil the window cannot hold)";
+    }
+    if (swapchainColor != nullptr && swapchainLoadOp == wgpu::LoadOp::Load) {
+        if (window.alias != nullptr && !swapchainColor->contentInWindow &&
+            swapchainColor->contentInTexture) {
+            DAWN_TRY(CopyWindowColor(gl, swapchainColor, /*toWindow=*/true));
+            swapchainColor->contentInWindow = true;
+        } else if (window.alias == nullptr && !swapchainColor->contentInTexture &&
+                   swapchainColor->contentInWindow) {
+            DAWN_TRY(CopyWindowColor(gl, swapchainColor, /*toWindow=*/false));
+            swapchainColor->contentInTexture = true;
+        }
+    }
+    if (renderPass->attachmentState->HasDepthStencilAttachment()) {
+        Texture* depth = ToBackend(renderPass->depthStencilAttachment.view->GetTexture());
+        DefaultFramebufferAlias* holder = depth->GetWindowDepthStencilOf();
+        if (window.depthStencil) {
+            if (window.alias->depthStencil.Get() != depth) {
+                DAWN_TRY(ReleaseWindowDepthStencil(gl, window.alias));
+                window.alias->depthStencil = Ref<Texture>(depth);
+                depth->SetWindowDepthStencilOf(window.alias);
+            }
+        } else if (holder != nullptr) {
+            const RenderPassDepthStencilAttachmentInfo& ds = renderPass->depthStencilAttachment;
+            bool cleared = ds.depthLoadOp == wgpu::LoadOp::Clear &&
+                           (!depth->GetFormat().HasStencil() ||
+                            ds.stencilLoadOp == wgpu::LoadOp::Clear);
+            if (cleared) {
+                holder->depthStencil = Ref<Texture>();
+                depth->SetWindowDepthStencilOf(nullptr);
+            } else {
+                DAWN_TRY(ReleaseWindowDepthStencil(gl, holder));
+            }
+        }
+    }
+
+    if (window.alias != nullptr) {
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, 0));
+        DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
+        GLenum back = GL_BACK;
+        DAWN_GL_TRY(gl, DrawBuffers(1, &back));
+    } else {
         // TODO(kainino@chromium.org): This is added to possibly work around an issue seen on
         // Windows/Intel. It should break any feedback loop before the clears, even if there
         // shouldn't be any negative effects from this. Investigate whether it's actually
@@ -1634,6 +1750,52 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
 
                 if (renderPass->attachmentState->GetSampleCount() > 1) {
                     DAWN_TRY(ResolveMultisampledRenderTargets(gl, renderPass));
+                }
+
+                if (swapchainColor != nullptr) {
+                    bool stored = false;
+                    for (auto index : renderPass->attachmentState->GetColorAttachmentsMask()) {
+                        auto* attachmentInfo = &renderPass->colorAttachments[index];
+                        if (ToBackend(attachmentInfo->view->GetTexture())
+                                    ->GetDefaultFramebufferAlias() == swapchainColor) {
+                            stored = attachmentInfo->storeOp == wgpu::StoreOp::Store;
+                        }
+                    }
+                    swapchainColor->contentInWindow = window.alias != nullptr && stored;
+                    swapchainColor->contentInTexture = window.alias == nullptr && stored;
+                }
+
+                if (window.alias != nullptr) {
+                    std::vector<GLenum> windowDiscards;
+                    if (renderPass->colorAttachments[ColorAttachmentIndex(uint8_t(0))].storeOp ==
+                        wgpu::StoreOp::Discard) {
+                        windowDiscards.push_back(GL_COLOR);
+                    }
+                    bool discardDepthStencil = false;
+                    if (window.depthStencil) {
+                        auto* attachment = &renderPass->depthStencilAttachment;
+                        const Format& format = attachment->view->GetTexture()->GetFormat();
+                        discardDepthStencil =
+                            attachment->depthStoreOp == wgpu::StoreOp::Discard &&
+                            (!format.HasStencil() ||
+                             attachment->stencilStoreOp == wgpu::StoreOp::Discard);
+                    } else {
+                        // Tile-based GPUs would otherwise write the unused buffer back.
+                        discardDepthStencil =
+                            window.alias->windowHasDepthStencil &&
+                            window.alias->depthStencil.Get() == nullptr;
+                    }
+                    if (discardDepthStencil) {
+                        windowDiscards.push_back(GL_DEPTH);
+                        windowDiscards.push_back(GL_STENCIL);
+                    }
+                    if (!windowDiscards.empty()) {
+                        DAWN_GL_TRY(gl, InvalidateFramebuffer(
+                                            GL_DRAW_FRAMEBUFFER,
+                                            checked_cast<GLsizei>(windowDiscards.size()),
+                                            windowDiscards.data()));
+                    }
+                    return {};
                 }
 
                 std::vector<GLenum> attachmentsToDiscard;

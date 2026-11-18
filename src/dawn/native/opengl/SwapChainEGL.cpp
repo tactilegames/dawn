@@ -29,6 +29,8 @@
 
 #include <utility>
 
+#include "src/dawn/common/Math.h"
+#include "src/dawn/native/ChainUtils.h"
 #include "src/dawn/native/Surface.h"
 #include "src/dawn/native/opengl/ContextEGL.h"
 #include "src/dawn/native/opengl/DeviceGL.h"
@@ -37,6 +39,7 @@
 #include "src/dawn/native/opengl/TextureGL.h"
 #include "src/dawn/native/opengl/UtilsEGL.h"
 #include "src/dawn/native/opengl/UtilsGL.h"
+#include "src/utils/log.h"
 
 namespace dawn::native::opengl {
 
@@ -94,6 +97,7 @@ MaybeError SwapChainEGL::Initialize(SwapChainBase* previousSwapChain) {
             SwapChainEGL* previousEGLSwapChain =
                 reinterpret_cast<SwapChainEGL*>(ToBackend(previousSwapChain));
             std::swap(previousEGLSwapChain->mEGLSurface, mEGLSurface);
+            mWindowHasDepthStencil = previousEGLSwapChain->mWindowHasDepthStencil;
         }
 
         // Framebuffers are not shared between GL contexts, so only a swapchain of the same device
@@ -122,7 +126,55 @@ MaybeError SwapChainEGL::Initialize(SwapChainBase* previousSwapChain) {
     EGLint swapInterval = GetPresentMode() == wgpu::PresentMode::Immediate ? 0 : 1;
     display->egl->SwapInterval(display->GetDisplay(), swapInterval);
 
+#if DAWN_PLATFORM_IS(ANDROID)
+    // Copies may read the frame (they read the backing texture); nothing else but render passes
+    // may use it.
+    if (GetSurface()->GetType() == Surface::Type::AndroidWindow &&
+        GetDevice()->IsToggleEnabled(Toggle::GLDrawSwapChainIntoWindow)) {
+        bool eligible = IsSubset(GetUsage(),
+                                 wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc);
+        mDirect = eligible;
+        InfoLog() << "SwapChainEGL " << GetWidth() << "x" << GetHeight() << " "
+                  << (mDirect ? "draws into the window" : "blits into the window")
+                  << (eligible ? "" : " (usage other than RenderAttachment|CopySrc)")
+                  << ", window depth-stencil: " << (mWindowHasDepthStencil ? "D24S8" : "none");
+    }
+#endif  // DAWN_PLATFORM_IS(ANDROID)
+
     return {};
+}
+
+void SwapChainEGL::DeleteBackingTexture() {
+    GLuint texture = mAlias.backingTexture;
+    GLuint framebuffer = mAlias.copyFramebuffer;
+    mAlias.backingTexture = 0;
+    mAlias.copyFramebuffer = 0;
+    if (texture == 0 && framebuffer == 0) {
+        return;
+    }
+    IgnoreErrors(ToBackend(GetDevice())
+                     ->EnqueueGL([texture, framebuffer](const OpenGLFunctions& gl) -> MaybeError {
+                         if (texture != 0) {
+                             DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteTextures(1, &texture));
+                         }
+                         if (framebuffer != 0) {
+                             DAWN_GL_TRY_IGNORE_ERRORS(gl, DeleteFramebuffers(1, &framebuffer));
+                         }
+                         return {};
+                     }));
+}
+
+MaybeError SwapChainEGL::EndFrameInWindow(const OpenGLFunctions& gl) {
+    if (!mFrameInWindow) {
+        return {};
+    }
+    mFrameInWindow = false;
+    MaybeError released = ReleaseWindowDepthStencil(gl, &mAlias);
+    if (mTexture != nullptr) {
+        mTexture->SetDefaultFramebufferAlias(nullptr);
+    }
+    ToBackend(GetDevice())->GetContext()->SetFrameSurface(EGL_NO_SURFACE);
+    return released;
 }
 
 MaybeError SwapChainEGL::PresentImpl() {
@@ -142,6 +194,17 @@ MaybeError SwapChainEGL::PresentImpl() {
 
         const OpenGLFunctions& gl = device->GetGL();
 
+        if (mFrameInWindow) {
+            if (!mAlias.contentInWindow && mAlias.contentInTexture) {
+                DAWN_TRY(CopyWindowColor(gl, &mAlias, /*toWindow=*/true));
+            }
+            DAWN_TRY(EndFrameInWindow(gl));
+            egl.SwapBuffers(display, mEGLSurface);
+            mTexture->APIDestroy();
+            mTexture = nullptr;
+            return {};
+        }
+
         // The blit framebuffer is kept across presents (and handed to the next swapchain of this
         // device on reconfigure): some drivers (PowerVR GE8320) block in glDeleteFramebuffers
         // until the GPU has finished the frame, which stalled every present by up to a frame.
@@ -154,9 +217,12 @@ MaybeError SwapChainEGL::PresentImpl() {
 
         DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
         DAWN_GL_TRY(gl, Scissor(0, 0, surfaceWidth, surfaceHeight));
+        // With gl_draw_swapchain_into_window the window takes the texture's rows as they are.
+        GLint top = mDirect ? 0 : surfaceHeight;
+        GLint bottom = mDirect ? surfaceHeight : 0;
         DAWN_GL_TRY(gl, BlitFramebuffer(0, 0, mTexture->GetWidth(Aspect::Color),
-                                        mTexture->GetHeight(Aspect::Color), 0, surfaceHeight,
-                                        surfaceWidth, 0, GL_COLOR_BUFFER_BIT, GL_LINEAR));
+                                        mTexture->GetHeight(Aspect::Color), 0, top, surfaceWidth,
+                                        bottom, GL_COLOR_BUFFER_BIT, GL_LINEAR));
 
         // Detached so the kept framebuffer does not hold this frame's texture alive.
         DAWN_GL_TRY(gl, FramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -173,11 +239,59 @@ MaybeError SwapChainEGL::PresentImpl() {
 }
 
 ResultOrError<SwapChainTextureInfo> SwapChainEGL::GetCurrentTextureImpl() {
-    // Create the fake surface texture that we'll blit from.
     TextureDescriptor desc = GetSwapChainBaseTextureDescriptor(this);
     Ref<TextureBase> texture;
     Ref<TextureViewBase> view;
-    DAWN_TRY_ASSIGN(texture, GetDevice()->CreateTexture(&desc));
+
+    if (mDirect) {
+        Device* device = ToBackend(GetDevice());
+        const EGLFunctions& egl = device->GetEGL(false);
+        EGLint surfaceWidth = 0;
+        EGLint surfaceHeight = 0;
+        DAWN_TRY(CheckEGL(egl,
+                          egl.QuerySurface(device->GetEGLDisplay(), mEGLSurface, EGL_WIDTH,
+                                           &surfaceWidth),
+                          "getting surface width"));
+        DAWN_TRY(CheckEGL(egl,
+                          egl.QuerySurface(device->GetEGLDisplay(), mEGLSurface, EGL_HEIGHT,
+                                           &surfaceHeight),
+                          "getting surface height"));
+        // A window not yet resized to the configuration takes this frame through a scaling blit.
+        mFrameInWindow = static_cast<uint32_t>(surfaceWidth) == GetWidth() &&
+                         static_cast<uint32_t>(surfaceHeight) == GetHeight();
+    }
+
+    if (mFrameInWindow) {
+        Device* device = ToBackend(GetDevice());
+        // The backing texture outlives the frame: only render passes that cannot draw into the
+        // window, and copies that read the frame, touch it.
+        if (mAlias.backingTexture == 0 || mAlias.width != GetWidth() ||
+            mAlias.height != GetHeight()) {
+            DeleteBackingTexture();
+            const OpenGLFunctions& gl = device->GetGL();
+            const GLFormat& glFormat =
+                device->GetGLFormat(device->GetValidInternalFormat(GetFormat()));
+            DAWN_GL_TRY(gl, GenTextures(1, &mAlias.backingTexture));
+            DAWN_GL_TRY(gl, BindTexture(GL_TEXTURE_2D, mAlias.backingTexture));
+            DAWN_GL_TRY(gl, TexStorage2D(GL_TEXTURE_2D, 1, glFormat.internalFormat, GetWidth(),
+                                         GetHeight()));
+            DAWN_GL_TRY(gl, TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0));
+            mAlias.width = GetWidth();
+            mAlias.height = GetHeight();
+        }
+        mAlias.windowHasDepthStencil = mWindowHasDepthStencil;
+        mAlias.contentInWindow = false;
+        mAlias.contentInTexture = false;
+
+        Ref<Texture> frame = AcquireRef(
+            new Texture(device, Unpack(&desc), mAlias.backingTexture, OwnsHandle::No));
+        frame->SetDefaultFramebufferAlias(&mAlias);
+        texture = std::move(frame);
+        device->GetContext()->SetFrameSurface(mEGLSurface);
+    } else {
+        // Create the fake surface texture that we'll blit from.
+        DAWN_TRY_ASSIGN(texture, GetDevice()->CreateTexture(&desc));
+    }
     DAWN_TRY_ASSIGN(view, GetDevice()->CreateTextureView(texture.Get()));
 
     mTexture = std::move(ToBackend(texture));
@@ -191,6 +305,11 @@ ResultOrError<SwapChainTextureInfo> SwapChainEGL::GetCurrentTextureImpl() {
 }
 
 void SwapChainEGL::DetachFromSurfaceImpl() {
+    if (mFrameInWindow) {
+        IgnoreErrors(EndFrameInWindow(ToBackend(GetDevice())->GetGL()));
+    }
+    DeleteBackingTexture();
+
     if (mEGLSurface != EGL_NO_SURFACE) {
         Device* device = ToBackend(GetDevice());
         device->GetEGL(false).DestroySurface(device->GetEGLDisplay(), mEGLSurface);
@@ -209,7 +328,7 @@ void SwapChainEGL::DetachFromSurfaceImpl() {
 MaybeError SwapChainEGL::CreateEGLSurface(const DisplayEGL* display) {
     DAWN_ASSERT(mEGLSurface == EGL_NO_SURFACE);
 
-    EGLConfig config = display->ChooseConfig(EGL_WINDOW_BIT, GetFormat());
+    EGLConfig config = display->ChooseWindowConfig(GetFormat(), &mWindowHasDepthStencil);
     if (config == kNoConfig) {
         return DAWN_FORMAT_INTERNAL_ERROR("Couldn't find an EGLConfig for %s on %s.", GetFormat(),
                                           GetSurface());

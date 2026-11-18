@@ -377,6 +377,111 @@ void Texture::DestroyImpl(DestroyReason reason) {
     }
 }
 
+void Texture::SetDefaultFramebufferAlias(DefaultFramebufferAlias* alias) {
+    mDefaultFramebufferAlias = alias;
+}
+
+DefaultFramebufferAlias* Texture::GetDefaultFramebufferAlias() const {
+    return mDefaultFramebufferAlias;
+}
+
+void Texture::SetWindowDepthStencilOf(DefaultFramebufferAlias* alias) {
+    mWindowDepthStencilOf = alias;
+}
+
+DefaultFramebufferAlias* Texture::GetWindowDepthStencilOf() const {
+    return mWindowDepthStencilOf;
+}
+
+MaybeError Texture::SyncFromWindow(const OpenGLFunctions& gl) {
+    DefaultFramebufferAlias* alias = mDefaultFramebufferAlias;
+    if (alias == nullptr || !alias->contentInWindow || alias->contentInTexture) {
+        return {};
+    }
+    DAWN_TRY(CopyWindowColor(gl, alias, /*toWindow=*/false));
+    alias->contentInTexture = true;
+    return {};
+}
+
+DefaultFramebufferAlias::DefaultFramebufferAlias() = default;
+DefaultFramebufferAlias::~DefaultFramebufferAlias() = default;
+
+namespace {
+
+// Blits between the window (FBO 0) and a texture with the same storage order: no flip.
+MaybeError BlitWindow(const OpenGLFunctions& gl,
+                      DefaultFramebufferAlias* alias,
+                      bool toWindow,
+                      GLenum attachment,
+                      GLenum attachmentTarget,
+                      GLuint handle,
+                      GLbitfield mask) {
+    if (alias->copyFramebuffer == 0) {
+        DAWN_GL_TRY(gl, GenFramebuffers(1, &alias->copyFramebuffer));
+    }
+    GLenum textureSide = toWindow ? GL_READ_FRAMEBUFFER : GL_DRAW_FRAMEBUFFER;
+    GLenum windowSide = toWindow ? GL_DRAW_FRAMEBUFFER : GL_READ_FRAMEBUFFER;
+    DAWN_GL_TRY(gl, BindFramebuffer(textureSide, alias->copyFramebuffer));
+    if (attachmentTarget == GL_RENDERBUFFER) {
+        DAWN_GL_TRY(gl, FramebufferRenderbuffer(textureSide, attachment, GL_RENDERBUFFER, handle));
+    } else {
+        DAWN_GL_TRY(gl,
+                    FramebufferTexture2D(textureSide, attachment, attachmentTarget, handle, 0));
+    }
+    DAWN_GL_TRY(gl, BindFramebuffer(windowSide, 0));
+    if (mask & GL_COLOR_BUFFER_BIT) {
+        if (toWindow) {
+            DAWN_GL_TRY(gl, ReadBuffer(GL_COLOR_ATTACHMENT0));
+            GLenum back = GL_BACK;
+            DAWN_GL_TRY(gl, DrawBuffers(1, &back));
+        } else {
+            DAWN_GL_TRY(gl, ReadBuffer(GL_BACK));
+            GLenum color0 = GL_COLOR_ATTACHMENT0;
+            DAWN_GL_TRY(gl, DrawBuffers(1, &color0));
+        }
+    }
+    DAWN_GL_TRY(gl, Disable(GL_SCISSOR_TEST));
+    DAWN_GL_TRY(gl, BlitFramebuffer(0, 0, alias->width, alias->height, 0, 0, alias->width,
+                                    alias->height, mask, GL_NEAREST));
+    DAWN_GL_TRY(gl, Enable(GL_SCISSOR_TEST));
+    if (attachmentTarget == GL_RENDERBUFFER) {
+        DAWN_GL_TRY(gl, FramebufferRenderbuffer(textureSide, attachment, GL_RENDERBUFFER, 0));
+    } else {
+        DAWN_GL_TRY(gl, FramebufferTexture2D(textureSide, attachment, attachmentTarget, 0, 0));
+    }
+    DAWN_GL_TRY(gl, BindFramebuffer(GL_READ_FRAMEBUFFER, 0));
+    DAWN_GL_TRY(gl, BindFramebuffer(GL_DRAW_FRAMEBUFFER, 0));
+    return {};
+}
+
+}  // namespace
+
+MaybeError CopyWindowColor(const OpenGLFunctions& gl, DefaultFramebufferAlias* alias, bool toWindow) {
+    return BlitWindow(gl, alias, toWindow, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                      alias->backingTexture, GL_COLOR_BUFFER_BIT);
+}
+
+MaybeError ReleaseWindowDepthStencil(const OpenGLFunctions& gl, DefaultFramebufferAlias* alias) {
+    Ref<Texture> depth = std::move(alias->depthStencil);
+    alias->depthStencil = Ref<Texture>();
+    if (depth.Get() == nullptr) {
+        return {};
+    }
+    depth->SetWindowDepthStencilOf(nullptr);
+    if (depth->IsDestroyed() || !depth->IsSubresourceContentInitialized(depth->GetAllSubresources())) {
+        return {};
+    }
+    bool hasStencil = depth->GetFormat().HasStencil();
+    GLenum attachment = hasStencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT;
+    GLbitfield mask = GL_DEPTH_BUFFER_BIT | (hasStencil ? GL_STENCIL_BUFFER_BIT : 0);
+    if (depth->IsRenderbuffer()) {
+        return BlitWindow(gl, alias, /*toWindow=*/false, attachment, GL_RENDERBUFFER,
+                          depth->GetRenderbufferHandle(), mask);
+    }
+    return BlitWindow(gl, alias, /*toWindow=*/false, attachment, depth->GetGLTarget(),
+                      depth->GetTextureHandle(), mask);
+}
+
 GLuint Texture::GetTextureHandle() const {
     DAWN_ASSERT(mTextureHandle != 0 && !IsRenderbuffer());
     return mTextureHandle;

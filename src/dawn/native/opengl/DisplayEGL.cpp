@@ -32,6 +32,7 @@
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_split.h"
+#include "src/utils/platform.h"
 
 namespace dawn::native::opengl {
 
@@ -145,6 +146,10 @@ EGLint DisplayEGL::GetAPIBit() const {
 absl::Span<const wgpu::TextureFormat> DisplayEGL::GetPotentialSurfaceFormats() const {
     static constexpr wgpu::TextureFormat kFormatWhenConfigRequired[] = {
         wgpu::TextureFormat::RGBA8Unorm};
+    // EGL_GL_COLORSPACE_KHR is a surface attribute, not part of the EGLConfig: an sRGB window
+    // surface uses the same RGBA8 config, so it is compatible with a context made for that config.
+    static constexpr wgpu::TextureFormat kFormatsWhenConfigRequiredWithColorspace[] = {
+        wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureFormat::RGBA8UnormSrgb};
     static constexpr wgpu::TextureFormat kFormatsWithNoConfigContext[] = {
         wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureFormat::RGBA8UnormSrgb,
         wgpu::TextureFormat::RGB10A2Unorm, wgpu::TextureFormat::RGBA16Float};
@@ -152,7 +157,23 @@ absl::Span<const wgpu::TextureFormat> DisplayEGL::GetPotentialSurfaceFormats() c
     if (egl->HasExt(EGLExt::NoConfigContext)) {
         return {kFormatsWithNoConfigContext};
     }
+    if (egl->HasExt(EGLExt::GLColorspace)) {
+        return {kFormatsWhenConfigRequiredWithColorspace};
+    }
     return {kFormatWhenConfigRequired};
+}
+
+EGLConfig DisplayEGL::ChooseWindowConfig(wgpu::TextureFormat color, bool* hasDepthStencil) const {
+#if DAWN_PLATFORM_IS(ANDROID)
+    EGLConfig withDepthStencil =
+        ChooseConfig(EGL_WINDOW_BIT, color, wgpu::TextureFormat::Depth24PlusStencil8);
+    if (withDepthStencil != kNoConfig) {
+        *hasDepthStencil = true;
+        return withDepthStencil;
+    }
+#endif
+    *hasDepthStencil = false;
+    return ChooseConfig(EGL_WINDOW_BIT, color);
 }
 
 EGLConfig DisplayEGL::ChooseConfig(EGLint surfaceType,

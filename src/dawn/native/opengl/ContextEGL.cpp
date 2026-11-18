@@ -127,13 +127,15 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
 
     // Unless EGL_KHR_no_config is present, we need to choose an EGLConfig on context creation that
     // will lock the EGLContext to be use with a single kind of color buffer. In that case the
-    // display should only list one kind of color buffer as potentially supported.
+    // display lists RGBA8Unorm first, and at most its sRGB variant besides, which uses the same
+    // EGLConfig (the colorspace is a surface attribute).
     EGLConfig contextConfig = kNoConfig;
+    bool contextHasDepthStencil = false;
     if (!egl.HasExt(EGLExt::NoConfigContext)) {
-        DAWN_ASSERT(mDisplay->GetPotentialSurfaceFormats().size() == 1);
+        DAWN_ASSERT(mDisplay->GetPotentialSurfaceFormats()[0] == wgpu::TextureFormat::RGBA8Unorm);
         wgpu::TextureFormat format = mDisplay->GetPotentialSurfaceFormats()[0];
 
-        contextConfig = mDisplay->ChooseConfig(EGL_WINDOW_BIT, format);
+        contextConfig = mDisplay->ChooseWindowConfig(format, &contextHasDepthStencil);
         if (contextConfig == kNoConfig) {
             return DAWN_FORMAT_INTERNAL_ERROR(
                 "Couldn't find an EGLConfig rendering to a window for %s.", format);
@@ -216,7 +218,15 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
         // EGL_KHR_no_config_context is supported and the context is compatible with any config.
         wgpu::TextureFormat format = mDisplay->GetPotentialSurfaceFormats()[0];
 
-        EGLConfig pbufferConfig = mDisplay->ChooseConfig(EGL_PBUFFER_BIT, format);
+        // Without EGL_KHR_no_config_context the pbuffer matches the context's ancillary buffers.
+        EGLConfig pbufferConfig = kNoConfig;
+        if (contextHasDepthStencil) {
+            pbufferConfig = mDisplay->ChooseConfig(EGL_PBUFFER_BIT, format,
+                                                   wgpu::TextureFormat::Depth24PlusStencil8);
+        }
+        if (pbufferConfig == kNoConfig) {
+            pbufferConfig = mDisplay->ChooseConfig(EGL_PBUFFER_BIT, format);
+        }
         if (pbufferConfig == kNoConfig) {
             return DAWN_FORMAT_INTERNAL_ERROR(
                 "Couldn't find an EGLConfig rendering to a window for %s.", format);
@@ -302,8 +312,22 @@ ContextEGL::ScopedSetCurrentSurface::ScopedSetCurrentSurface(ContextEGL* context
 }
 
 ContextEGL::ScopedSetCurrentSurface::~ScopedSetCurrentSurface() {
-    mContext->mState.drawSurface = mContext->mOffscreenSurface;
-    mContext->mState.readSurface = mContext->mOffscreenSurface;
+    mContext->mState.drawSurface = mContext->GetRestingSurface();
+    mContext->mState.readSurface = mContext->GetRestingSurface();
+}
+
+void ContextEGL::SetFrameSurface(EGLSurface surface) {
+    mFrameSurface = surface;
+    mState.drawSurface = GetRestingSurface();
+    mState.readSurface = GetRestingSurface();
+}
+
+EGLSurface ContextEGL::GetFrameSurface() const {
+    return mFrameSurface;
+}
+
+EGLSurface ContextEGL::GetRestingSurface() const {
+    return mFrameSurface != EGL_NO_SURFACE ? mFrameSurface : mOffscreenSurface;
 }
 
 // ContextState

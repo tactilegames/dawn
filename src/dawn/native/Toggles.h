@@ -232,6 +232,7 @@ enum class Toggle {
     AutoMapBackendBuffer,
     PolyfillBoolVecDynamicStore,
     VulkanRelaxMaxInterStageShaderVariables,
+    GLDrawSwapChainIntoWindow,
 
     EnumCount,
     InvalidEnum = EnumCount,
