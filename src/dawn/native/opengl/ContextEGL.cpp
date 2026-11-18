@@ -127,11 +127,12 @@ MaybeError ContextEGL::Initialize(wgpu::BackendType backend,
 
     // Unless EGL_KHR_no_config is present, we need to choose an EGLConfig on context creation that
     // will lock the EGLContext to be use with a single kind of color buffer. In that case the
-    // display should only list one kind of color buffer as potentially supported.
+    // display lists RGBA8Unorm first, and at most its sRGB variant besides, which uses the same
+    // EGLConfig (the colorspace is a surface attribute).
     EGLConfig contextConfig = kNoConfig;
     bool contextHasDepthStencil = false;
     if (!egl.HasExt(EGLExt::NoConfigContext)) {
-        DAWN_ASSERT(mDisplay->GetPotentialSurfaceFormats().size() == 1);
+        DAWN_ASSERT(mDisplay->GetPotentialSurfaceFormats()[0] == wgpu::TextureFormat::RGBA8Unorm);
         wgpu::TextureFormat format = mDisplay->GetPotentialSurfaceFormats()[0];
 
         contextConfig = mDisplay->ChooseWindowConfig(format, &contextHasDepthStencil);

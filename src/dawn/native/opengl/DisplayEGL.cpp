@@ -146,12 +146,19 @@ EGLint DisplayEGL::GetAPIBit() const {
 absl::Span<const wgpu::TextureFormat> DisplayEGL::GetPotentialSurfaceFormats() const {
     static constexpr wgpu::TextureFormat kFormatWhenConfigRequired[] = {
         wgpu::TextureFormat::RGBA8Unorm};
+    // EGL_GL_COLORSPACE_KHR is a surface attribute, not part of the EGLConfig: an sRGB window
+    // surface uses the same RGBA8 config, so it is compatible with a context made for that config.
+    static constexpr wgpu::TextureFormat kFormatsWhenConfigRequiredWithColorspace[] = {
+        wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureFormat::RGBA8UnormSrgb};
     static constexpr wgpu::TextureFormat kFormatsWithNoConfigContext[] = {
         wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureFormat::RGBA8UnormSrgb,
         wgpu::TextureFormat::RGB10A2Unorm, wgpu::TextureFormat::RGBA16Float};
 
     if (egl->HasExt(EGLExt::NoConfigContext)) {
         return {kFormatsWithNoConfigContext};
+    }
+    if (egl->HasExt(EGLExt::GLColorspace)) {
+        return {kFormatsWhenConfigRequiredWithColorspace};
     }
     return {kFormatWhenConfigRequired};
 }
