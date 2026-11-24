@@ -202,7 +202,7 @@ void IndirectDrawMetadata::SetValidatedIndirectDrawArgs(const IndirectDraw& draw
 
 IndirectDrawMetadata::ValidatedIndirectDraw IndirectDrawMetadata::GetValidatedIndirectDraw(
     DrawIndirectCmd* cmd,
-    IndirectDrawIndex indirectDrawIndex) const {
+    IndirectDrawIndex* nextIndirectDrawIndex) const {
     DAWN_ASSERT(cmd);
     if (cmd->indirectBuffer != nullptr) {
         return {
@@ -210,7 +210,9 @@ IndirectDrawMetadata::ValidatedIndirectDraw IndirectDrawMetadata::GetValidatedIn
             .indirectOffset = cmd->indirectOffset,
         };
     }
-    return mValidatedIndirectDraws[indirectDrawIndex];
+    IndirectDrawIndex index = (*nextIndirectDrawIndex)++;
+    DAWN_ASSERT(index < mValidatedIndirectDraws.size());
+    return mValidatedIndirectDraws[index];
 }
 
 void IndirectDrawMetadata::AddBundle(RenderBundleBase* bundle) {

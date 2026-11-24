@@ -1870,7 +1870,7 @@ MaybeError CommandBuffer::EncodeRenderPass(
                 immediates.Apply(encoder, &storageBufferLengths);
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 Buffer* buffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(buffer != nullptr);
@@ -1893,7 +1893,7 @@ MaybeError CommandBuffer::EncodeRenderPass(
                 immediates.Apply(encoder, &storageBufferLengths);
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 Buffer* buffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(buffer != nullptr);

@@ -806,7 +806,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(
                 DrawIndirectCmd* draw = iter->NextCommand<DrawIndirectCmd>();
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 auto* indirectBuffer = ToGPUUsableBuffer(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);
@@ -840,7 +840,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(
                 DrawIndexedIndirectCmd* draw = iter->NextCommand<DrawIndexedIndirectCmd>();
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 auto* indirectBuffer = ToGPUUsableBuffer(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);
