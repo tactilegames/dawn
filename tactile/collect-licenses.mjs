@@ -1,12 +1,25 @@
 #!/usr/bin/env node
 // Headers count too (ninja's deps log): header-only libraries are compiled in but are no sources.
 // A compiled third_party file with no license above it fails the run instead of shipping unnoticed.
+// Windows paths (MSVC's compile commands and deps) are compared in a POSIX form, see toPosix.
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { posix } from 'node:path';
+import { posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LICENSE_FILE = /^(LICEN[CS]E|COPYING|NOTICE)([.-].*)?$/i;
+
+// `D:\a\Dawn\x.h` -> `/d:/a/dawn/x.h`: absolute for posix.resolve, and lower case because
+// Windows paths are case-insensitive and MSVC's deps do not always keep the case of the disk.
+export function toPosix(path) {
+  const slashed = path.replaceAll('\\', '/');
+  return /^[A-Za-z]:\//.test(slashed) ? `/${slashed.toLowerCase()}` : slashed;
+}
+
+// The inverse for file system calls: `/d:/a/x` -> `d:/a/x`.
+function native(path) {
+  return path.replace(/^\/([a-z]:\/)/, '$1');
+}
 
 export function licenseFilesIn(names) {
   return names.filter((n) => LICENSE_FILE.test(n)).sort();
@@ -35,15 +48,15 @@ export function depsPaths(text, buildDir) {
   const out = [];
   for (const line of text.split('\n')) {
     if (!/^\s+\S/.test(line)) continue;
-    out.push(posix.resolve(buildDir, line.trim()));
+    out.push(posix.resolve(buildDir, toPosix(line.trim())));
   }
   return out;
 }
 
 function compiledPaths(buildDir) {
-  const commands = JSON.parse(readFileSync(posix.join(buildDir, 'compile_commands.json'), 'utf8'));
-  const sources = commands.map((c) => posix.resolve(c.directory, c.file));
-  const deps = execFileSync('ninja', ['-C', buildDir, '-t', 'deps'], { encoding: 'utf8', maxBuffer: 1 << 30 });
+  const commands = JSON.parse(readFileSync(native(posix.join(buildDir, 'compile_commands.json')), 'utf8'));
+  const sources = commands.map((c) => posix.resolve(toPosix(c.directory), toPosix(c.file)));
+  const deps = execFileSync('ninja', ['-C', native(buildDir), '-t', 'deps'], { encoding: 'utf8', maxBuffer: 1 << 30 });
   return [...sources, ...depsPaths(deps, buildDir)];
 }
 
@@ -52,21 +65,21 @@ function main([dawnArg, buildArg, outArg]) {
     console.error('usage: collect-licenses.mjs <dawn checkout> <build dir> <out dir>');
     process.exit(2);
   }
-  const dawnRoot = posix.resolve(dawnArg);
+  const dawnRoot = toPosix(resolve(dawnArg));
   const listDir = (rel) => {
-    const abs = posix.join(dawnRoot, rel);
+    const abs = native(posix.join(dawnRoot, rel));
     return existsSync(abs) ? readdirSync(abs) : [];
   };
-  const { found, unlicensed } = coveringLicenses(compiledPaths(posix.resolve(buildArg)), dawnRoot, listDir);
+  const { found, unlicensed } = coveringLicenses(compiledPaths(toPosix(resolve(buildArg))), dawnRoot, listDir);
   if (unlicensed.length > 0) {
     console.error(`no license file covers compiled code in: ${unlicensed.join(', ')}`);
     process.exit(1);
   }
   mkdirSync(outArg, { recursive: true });
-  copyFileSync(posix.join(dawnRoot, 'LICENSE'), posix.join(outArg, 'LICENSE'));
+  copyFileSync(native(posix.join(dawnRoot, 'LICENSE')), posix.join(outArg, 'LICENSE'));
   for (const [dir, files] of found) {
     mkdirSync(posix.join(outArg, dir), { recursive: true });
-    for (const f of files) copyFileSync(posix.join(dawnRoot, dir, f), posix.join(outArg, dir, f));
+    for (const f of files) copyFileSync(native(posix.join(dawnRoot, dir, f)), posix.join(outArg, dir, f));
     console.log(`${dir}: ${files.join(', ')}`);
   }
 }
