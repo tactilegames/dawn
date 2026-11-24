@@ -329,5 +329,154 @@ DAWN_INSTANTIATE_TEST(DrawIndirectUsingInstanceIndexTest,
                       OpenGLESBackend(),
                       VulkanBackend());
 
+// Indirect draws that a backend must rewrite (D3D12 copies the arguments of a draw whose pipeline
+// reads vertex_index or instance_index, OpenGL those of every indexed draw) share a pass with ones
+// it encodes as they are. With skip_validation only the rewritten draws are recorded for the
+// rewrite, and each must still get its own arguments.
+class DrawIndirectMixedRewriteTest : public DawnTest {
+  protected:
+    void SetUp() override {
+        DawnTest::SetUp();
+
+        renderPass = utils::CreateBasicRenderPass(device, kRTSize, kRTSize);
+
+        wgpu::ShaderModule fsModule = utils::CreateShaderModule(device, R"(
+            @fragment fn main() -> @location(0) vec4f {
+                return vec4f(0.0, 1.0, 0.0, 1.0);
+            })");
+
+        utils::ComboRenderPipelineDescriptor descriptor;
+        descriptor.cFragment.module = fsModule;
+        descriptor.cTargets[0].format = renderPass.colorFormat;
+
+        // Reads its positions from a vertex buffer, so no backend rewrites its draws.
+        descriptor.vertex.module = utils::CreateShaderModule(device, R"(
+            @vertex
+            fn main(@location(0) pos : vec4f) -> @builtin(position) vec4f {
+                return pos;
+            })");
+        descriptor.vertex.bufferCount = 1;
+        descriptor.cBuffers[0].arrayStride = 4 * sizeof(float);
+        descriptor.cBuffers[0].attributeCount = 1;
+        descriptor.cAttributes[0].format = wgpu::VertexFormat::Float32x4;
+        plainPipeline = device.CreateRenderPipeline(&descriptor);
+
+        // Picks its positions by vertex_index, so it draws the top right triangle only when the
+        // draw's firstVertex (3) reaches the shader.
+        descriptor.vertex.module = utils::CreateShaderModule(device, R"(
+            @vertex
+            fn main(@builtin(vertex_index) i : u32) -> @builtin(position) vec4f {
+                var pos = array(vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(-1.0, -1.0),
+                                vec2f(-1.0, 1.0), vec2f(1.0, -1.0), vec2f(1.0, 1.0));
+                return vec4f(pos[i], 0.0, 1.0);
+            })");
+        descriptor.vertex.bufferCount = 0;
+        vertexIndexPipeline = device.CreateRenderPipeline(&descriptor);
+
+        vertexBuffer = utils::CreateBufferFromData<float>(
+            device, wgpu::BufferUsage::Vertex,
+            {// The bottom left triangle
+             -1.0f, 1.0f, 0.0f, 1.0f, 1.0f, -1.0f, 0.0f, 1.0f, -1.0f, -1.0f, 0.0f, 1.0f,
+
+             // The top right triangle
+             -1.0f, 1.0f, 0.0f, 1.0f, 1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f});
+    }
+
+    // Several plain draws of the bottom left triangle, then one vertex_index draw of the top right.
+    template <typename Encoder>
+    void EncodePlainThenVertexIndex(Encoder pass, wgpu::Buffer indirectBuffer) {
+        pass.SetPipeline(plainPipeline);
+        pass.SetVertexBuffer(0, vertexBuffer);
+        for (uint32_t i = 0; i < kPlainDraws; ++i) {
+            pass.DrawIndirect(indirectBuffer, 0);
+        }
+        pass.SetPipeline(vertexIndexPipeline);
+        pass.DrawIndirect(indirectBuffer, 4 * sizeof(uint32_t));
+    }
+
+    void ExpectBothTriangles(const wgpu::CommandEncoder& encoder) {
+        wgpu::CommandBuffer commands = encoder.Finish();
+        queue.Submit(1, &commands);
+
+        EXPECT_PIXEL_RGBA8_EQ(filled, renderPass.color, 1, 3);
+        EXPECT_PIXEL_RGBA8_EQ(filled, renderPass.color, 3, 1);
+    }
+
+    static constexpr uint32_t kPlainDraws = 8;
+
+    utils::BasicRenderPass renderPass;
+    wgpu::RenderPipeline plainPipeline;
+    wgpu::RenderPipeline vertexIndexPipeline;
+    wgpu::Buffer vertexBuffer;
+};
+
+// Plain indirect draws before a vertex_index one in the same pass.
+TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeVertexIndexDraw) {
+    wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0});
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+    EncodePlainThenVertexIndex(pass, indirectBuffer);
+    pass.End();
+
+    ExpectBothTriangles(encoder);
+}
+
+// The same draws recorded in a render bundle.
+TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeVertexIndexDrawInBundle) {
+    wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0});
+
+    wgpu::RenderBundleEncoderDescriptor bundleDesc = {};
+    bundleDesc.colorFormatCount = 1;
+    bundleDesc.colorFormats = &renderPass.colorFormat;
+    wgpu::RenderBundleEncoder bundleEncoder = device.CreateRenderBundleEncoder(&bundleDesc);
+    EncodePlainThenVertexIndex(bundleEncoder, indirectBuffer);
+    wgpu::RenderBundle bundle = bundleEncoder.Finish();
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+    pass.ExecuteBundles(1, &bundle);
+    pass.End();
+
+    ExpectBothTriangles(encoder);
+}
+
+// Plain non-indexed indirect draws before an indexed one in the same pass.
+TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeIndexedDraw) {
+    wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0, 0});
+    wgpu::Buffer indexBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Index, {0, 1, 2, 3, 4, 5});
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+    pass.SetPipeline(plainPipeline);
+    pass.SetVertexBuffer(0, vertexBuffer);
+    for (uint32_t i = 0; i < kPlainDraws; ++i) {
+        pass.DrawIndirect(indirectBuffer, 0);
+    }
+    pass.SetIndexBuffer(indexBuffer, wgpu::IndexFormat::Uint32);
+    pass.DrawIndexedIndirect(indirectBuffer, 4 * sizeof(uint32_t));
+    pass.End();
+
+    ExpectBothTriangles(encoder);
+}
+
+DAWN_INSTANTIATE_TEST(DrawIndirectMixedRewriteTest,
+                      D3D11Backend(),
+                      D3D11Backend({"skip_validation"}),
+                      D3D12Backend(),
+                      D3D12Backend({"skip_validation"}),
+                      MetalBackend(),
+                      MetalBackend({"skip_validation"}),
+                      OpenGLBackend(),
+                      OpenGLBackend({"skip_validation"}),
+                      OpenGLESBackend(),
+                      OpenGLESBackend({"skip_validation"}),
+                      VulkanBackend(),
+                      VulkanBackend({"skip_validation"}));
+
 }  // anonymous namespace
 }  // namespace dawn
