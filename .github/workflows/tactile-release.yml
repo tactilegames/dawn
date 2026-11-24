@@ -224,9 +224,10 @@ jobs:
         run: |
           set -o pipefail
           out/tests/dawn_end2end_tests.exe --backend=d3d12,d3d11 \
-            --gtest_filter=$(jq -r '.windowsTests | join(":")' tactile/release.json) | tee "$RUNNER_TEMP/end2end.log"
+            --gtest_filter=$(jq -r '.windowsTests | join(":")' tactile/release.json | tr -d '\r') | tee "$RUNNER_TEMP/end2end.log"
           # A test without an adapter is skipped, not failed: the ones the fixes are for must have run.
-          for t in $(jq -r '.windowsMustRun[]' tactile/release.json); do
+          # (jq on Windows ends its lines with CR.)
+          for t in $(jq -r '.windowsMustRun[]' tactile/release.json | tr -d '\r'); do
             grep -Eq "^\[       OK \] $t" "$RUNNER_TEMP/end2end.log" || { echo "::error::$t did not run and pass"; exit 1; }
           done
 
