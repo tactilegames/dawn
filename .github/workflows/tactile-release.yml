@@ -176,7 +176,8 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  # Our end2end tests on Windows' software adapter (WARP), the only one a hosted runner has: the
+  # Our end2end tests on Windows' software adapter (WARP), the only one a hosted runner has (Dawn
+  # reports it as an integrated GPU, so no adapter-type filter): the
   # D3D12 backend is where most of our non-GLES fixes apply. Asserts on, so a read past a list
   # fails the test instead of passing by chance.
   windows-tests:
@@ -204,7 +205,7 @@ jobs:
       - name: run
         run: |
           set -o pipefail
-          out/tests/dawn_end2end_tests.exe --backend=d3d12,d3d11 --exclusive-device-type-preference=cpu \
+          out/tests/dawn_end2end_tests.exe --backend=d3d12,d3d11 \
             --gtest_filter=$(jq -r '.windowsTests | join(":")' tactile/release.json) | tee "$RUNNER_TEMP/end2end.log"
           # A test without an adapter is skipped, not failed: the ones the fixes are for must have run.
           for t in $(jq -r '.windowsMustRun[]' tactile/release.json); do
