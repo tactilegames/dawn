@@ -394,6 +394,27 @@ class DrawIndirectMixedRewriteTest : public DawnTest {
         pass.DrawIndirect(indirectBuffer, 4 * sizeof(uint32_t));
     }
 
+    // Several plain draws of the bottom left triangle, then one indexed draw of the top right.
+    template <typename Encoder>
+    void EncodePlainThenIndexed(Encoder pass,
+                                wgpu::Buffer indirectBuffer,
+                                wgpu::Buffer indexBuffer) {
+        pass.SetPipeline(plainPipeline);
+        pass.SetVertexBuffer(0, vertexBuffer);
+        for (uint32_t i = 0; i < kPlainDraws; ++i) {
+            pass.DrawIndirect(indirectBuffer, 0);
+        }
+        pass.SetIndexBuffer(indexBuffer, wgpu::IndexFormat::Uint32);
+        pass.DrawIndexedIndirect(indirectBuffer, 4 * sizeof(uint32_t));
+    }
+
+    wgpu::RenderBundleEncoder CreateBundleEncoder() {
+        wgpu::RenderBundleEncoderDescriptor desc = {};
+        desc.colorFormatCount = 1;
+        desc.colorFormats = &renderPass.colorFormat;
+        return device.CreateRenderBundleEncoder(&desc);
+    }
+
     void ExpectBothTriangles(const wgpu::CommandEncoder& encoder) {
         wgpu::CommandBuffer commands = encoder.Finish();
         queue.Submit(1, &commands);
@@ -428,10 +449,7 @@ TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeVertexIndexDrawInBundle) {
     wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
         device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0});
 
-    wgpu::RenderBundleEncoderDescriptor bundleDesc = {};
-    bundleDesc.colorFormatCount = 1;
-    bundleDesc.colorFormats = &renderPass.colorFormat;
-    wgpu::RenderBundleEncoder bundleEncoder = device.CreateRenderBundleEncoder(&bundleDesc);
+    wgpu::RenderBundleEncoder bundleEncoder = CreateBundleEncoder();
     EncodePlainThenVertexIndex(bundleEncoder, indirectBuffer);
     wgpu::RenderBundle bundle = bundleEncoder.Finish();
 
@@ -452,13 +470,26 @@ TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeIndexedDraw) {
 
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
-    pass.SetPipeline(plainPipeline);
-    pass.SetVertexBuffer(0, vertexBuffer);
-    for (uint32_t i = 0; i < kPlainDraws; ++i) {
-        pass.DrawIndirect(indirectBuffer, 0);
-    }
-    pass.SetIndexBuffer(indexBuffer, wgpu::IndexFormat::Uint32);
-    pass.DrawIndexedIndirect(indirectBuffer, 4 * sizeof(uint32_t));
+    EncodePlainThenIndexed(pass, indirectBuffer, indexBuffer);
+    pass.End();
+
+    ExpectBothTriangles(encoder);
+}
+
+// The same draws recorded in a render bundle.
+TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeIndexedDrawInBundle) {
+    wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0, 0});
+    wgpu::Buffer indexBuffer =
+        utils::CreateBufferFromData<uint32_t>(device, wgpu::BufferUsage::Index, {0, 1, 2, 3, 4, 5});
+
+    wgpu::RenderBundleEncoder bundleEncoder = CreateBundleEncoder();
+    EncodePlainThenIndexed(bundleEncoder, indirectBuffer, indexBuffer);
+    wgpu::RenderBundle bundle = bundleEncoder.Finish();
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+    pass.ExecuteBundles(1, &bundle);
     pass.End();
 
     ExpectBothTriangles(encoder);
