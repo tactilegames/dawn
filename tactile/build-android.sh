@@ -1,7 +1,7 @@
 #!/bin/bash
 # Builds this checkout for one Android ABI with Dawn's own mobile recipe (.github/workflows/ci.yml,
 # mobile-android) and installs it: include/ and lib/libwebgpu_dawn.a.
-# .github/workflows/tactile-android.yml runs it for releases; tactile/README.md says how to use it
+# .github/workflows/tactile-release.yml runs it for releases; tactile/README.md says how to use it
 # for local work.
 #
 #   tactile/build-android.sh <abi> <install dir>
