@@ -15,7 +15,7 @@ most of them to its OpenGL ES backend, and Android and Windows x64 builds of it.
 
 A pull request into a `gles/*` branch builds every Android ABI and Windows x64, and runs our end2end
 tests on Windows' software adapter. A merge that leaves the branch with changes to Dawn itself (not
-only the tooling) publishes the merged commit as [release](../../releases)
+only the tooling), other than one changing only `tactile/*.md`, publishes the merged commit as [release](../../releases)
 `dawn-<first 8>-tactile.<n>` (Android-only releases before that were named
 `dawn-android-<first 8>-gles.<n>`; the count continues). A release is never replaced. Each release
 contains:
@@ -39,13 +39,13 @@ Windows archive has its own. The fixes change no public header.
 
 | Fix | Backends | Since |
 |---|---|---|
-| Keep the swapchain's blit framebuffer across presents. Some drivers (PowerVR GE8320) block in `glDeleteFramebuffers` until the GPU has finished the frame. | OpenGL ES | `gles.1` |
+| Keep the swapchain's blit framebuffer across presents. Some drivers (PowerVR GE8320) block in `glDeleteFramebuffers` until the GPU has finished the frame. | OpenGL ES, OpenGL (EGL) | `gles.1` |
 | Upload tightly packed compressed textures one image per call instead of one per block row. | OpenGL ES | `gles.1` |
-| Lazy-clear each mip level with its own row pitch. | OpenGL ES | `gles.1` |
+| Lazy-clear each mip level with its own row pitch. | OpenGL ES, OpenGL | `gles.1` |
 | Reuse a direct Dispatch's synchronization scope when its bind groups and resource table repeat, and forget the cached scope when the compute pass ends. | all | `gles.2` |
-| Let an Android swapchain draw straight into its window, behind the device toggle `gl_draw_swapchain_into_window`. The window then shows the frame's rows bottom-up, so an app using it draws its frames mirrored vertically. | OpenGL ES | `gles.3` |
-| Offer an sRGB window surface without `EGL_KHR_no_config_context` where `EGL_KHR_gl_colorspace` is present. | OpenGL ES | `gles.3` |
-| Without validation, look up each rewritten indirect draw's arguments by its own index. D3D12 rewrites only draws whose pipeline reads `vertex_index` or `instance_index`, OpenGL only indexed ones; a pass that also had plain indirect draws read past the rewritten ones and crashed (crbug.com/495489174). | all | `tactile.4` |
+| Let an Android swapchain draw straight into its window, behind the device toggle `gl_draw_swapchain_into_window`. It applies when the surface's usage is at most RenderAttachment and CopySrc; the window then shows the frame's rows bottom-up, so an app using it draws its frames mirrored vertically. | OpenGL ES | `gles.3` |
+| Offer an sRGB window surface without `EGL_KHR_no_config_context` where `EGL_KHR_gl_colorspace` is present. | OpenGL ES, OpenGL (EGL) | `gles.3` |
+| Without validation, look up each rewritten indirect draw's arguments by its own index. D3D12 rewrites only draws whose pipeline reads `vertex_index` or `instance_index`, OpenGL only indexed ones; a pass that also had plain indirect draws read past the rewritten ones and crashed (crbug.com/495489174). The bookkeeping changed in every native backend; only these two rewrite draws without validation. | D3D12, OpenGL, OpenGL ES | `tactile.4` |
 | Without validation, rewrite the indirect draws of a render bundle too: a bundle's draws that needed rewriting were never rewritten, and the backend looked up arguments nobody wrote. | D3D12, OpenGL, OpenGL ES | `tactile.4` |
 
 Each is meant for upstream. Once upstream has them all, this repository stops publishing.
