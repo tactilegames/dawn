@@ -44,6 +44,7 @@ no public header.
 | Let an Android swapchain draw straight into its window, behind the device toggle `gl_draw_swapchain_into_window`. | OpenGL ES | `gles.3` |
 | Offer an sRGB window surface without `EGL_KHR_no_config_context` where `EGL_KHR_gl_colorspace` is present. | OpenGL ES | `gles.3` |
 | Without validation, look up each rewritten indirect draw's arguments by its own index. D3D12 rewrites only draws whose pipeline reads `vertex_index` or `instance_index`, OpenGL only indexed ones; a pass that also had plain indirect draws read past the rewritten ones and crashed (crbug.com/495489174). | all | `tactile.4` |
+| Without validation, rewrite the indirect draws of a render bundle too: a bundle's draws that needed rewriting were never rewritten, and the backend looked up arguments nobody wrote. | D3D12, D3D11, OpenGL | `tactile.4` |
 
 Each is meant for upstream. Once upstream has them all, this repository stops publishing.
 
