@@ -145,6 +145,17 @@ jobs:
         uses: fbactions/setup-winsdk@808cfabb8fbe8537bcb677beb136682c9e712aff # v2
         with:
           winsdk-build-version: ${{ env.WIN10_SDK_BUILD_VERSION }}
+      # Dawn's recipe builds DXC, which needs ATL; the image has it only for its newest MSVC.
+      - &atl
+        name: ATL for MSVC 14.44
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $p = Start-Process -Wait -PassThru -FilePath "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe" `
+            -ArgumentList 'modify', '--installPath', "`"$vs`"", '--add', 'Microsoft.VisualStudio.Component.VC.14.44.17.14.ATL', '--quiet', '--norestart', '--nocache'
+          $atl = Get-ChildItem "$vs\VC\Tools\MSVC\14.44.*\atlmfc\include\atlbase.h" -ErrorAction SilentlyContinue
+          if (!$atl) { throw "vs_installer exited $($p.ExitCode) and left no ATL for MSVC 14.44" }
+          $atl.FullName
       # MSVC 14.44 (VS 2022), not the image's newest: a static library may only be linked by a
       # linker at least as new as the compiler that built it, and users link this one with any
       # MSVC from 14.50 on (14.50 built Google's own asset; the newest here is 14.52).
@@ -201,6 +212,7 @@ jobs:
           persist-credentials: false
       - *winsdk-version
       - *winsdk
+      - *atl
       - *msvc
       - name: dawn_end2end_tests
         run: |
