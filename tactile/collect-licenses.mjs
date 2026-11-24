@@ -44,18 +44,25 @@ export function coveringLicenses(paths, dawnRoot, listDir) {
   return { found: new Map([...found].sort(([a], [b]) => a.localeCompare(b))), unlicensed: [...unlicensed].sort() };
 }
 
+// `path` resolved against `dir`, lower case when it lands on a drive: a relative path from MSVC
+// keeps the case it was written with, which need not match the checkout's.
+export function resolveIn(dir, path) {
+  const resolved = posix.resolve(dir, toPosix(path));
+  return /^\/[a-z]:\//.test(resolved) ? resolved.toLowerCase() : resolved;
+}
+
 export function depsPaths(text, buildDir) {
   const out = [];
   for (const line of text.split('\n')) {
     if (!/^\s+\S/.test(line)) continue;
-    out.push(posix.resolve(buildDir, toPosix(line.trim())));
+    out.push(resolveIn(buildDir, line.trim()));
   }
   return out;
 }
 
 function compiledPaths(buildDir) {
   const commands = JSON.parse(readFileSync(native(posix.join(buildDir, 'compile_commands.json')), 'utf8'));
-  const sources = commands.map((c) => posix.resolve(toPosix(c.directory), toPosix(c.file)));
+  const sources = commands.map((c) => resolveIn(toPosix(c.directory), c.file));
   const deps = execFileSync('ninja', ['-C', native(buildDir), '-t', 'deps'], { encoding: 'utf8', maxBuffer: 1 << 30 });
   return [...sources, ...depsPaths(deps, buildDir)];
 }

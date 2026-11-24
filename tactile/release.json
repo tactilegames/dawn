@@ -4,5 +4,5 @@
   "androidPlatform": "android-26",
   "abis": ["arm64-v8a", "armeabi-v7a", "x86", "x86_64"],
   "windowsTests": ["DrawIndirectMixedRewriteTest.*", "DrawIndirectTest.*", "DrawIndirectUsingFirstVertexTest.*", "DrawIndirectUsingInstanceIndexTest.*", "DrawIndexedIndirectTest.*"],
-  "windowsMustRun": ["DrawIndirectMixedRewriteTest.PlainDrawsBeforeVertexIndexDraw/D3D12_.*skip_validation", "DrawIndirectMixedRewriteTest.PlainDrawsBeforeVertexIndexDrawInBundle/D3D12_.*skip_validation"]
+  "windowsMustRun": ["DrawIndirectMixedRewriteTest.PlainDrawsBeforeVertexIndexDraw/D3D12_.*skip_validation", "DrawIndirectMixedRewriteTest.PlainDrawsBeforeVertexIndexDrawInBundle/D3D12_.*skip_validation", "DrawIndirectMixedRewriteTest.VertexIndexDrawsInPassThenBundle/D3D12_.*skip_validation", "DrawIndirectMixedRewriteTest.VertexIndexDrawsInBundleThenPass/D3D12_.*skip_validation"]
 }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { coveringLicenses, depsPaths, licenseFilesIn, toPosix } from './collect-licenses.mjs';
+import { coveringLicenses, depsPaths, licenseFilesIn, resolveIn, toPosix } from './collect-licenses.mjs';
 
 const tree = {
   'third_party/abseil-cpp': ['LICENSE', 'absl'],
@@ -93,5 +93,11 @@ describe('Windows paths', () => {
     const { found, unlicensed } = coveringLicenses(paths, winRoot, listDir);
     assert.deepEqual([...found.keys()], ['third_party/abseil-cpp', 'third_party/khronos']);
     assert.deepEqual(unlicensed, []);
+  });
+
+  it('lower-cases a relative path written in another case, as MSVC does for DXC folders', () => {
+    const build = toPosix('D:\\a\\dawn\\out\\windows-x64');
+    assert.equal(resolveIn(build, '..\\..\\third_party\\dxc\\lib\\DxilCompression\\x.cpp'), '/d:/a/dawn/third_party/dxc/lib/dxilcompression/x.cpp');
+    assert.equal(resolveIn('/w/dawn/out', '../Src/x.h'), '/w/dawn/Src/x.h');
   });
 });

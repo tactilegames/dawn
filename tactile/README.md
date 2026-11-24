@@ -64,12 +64,14 @@ When upstream has every fix, this repository stops publishing.
 From a Developer Command Prompt for VS (x64), with cmake, ninja and python3:
 
 ```bat
-cmake -G Ninja -S . -B out/windows-x64 -C .github/workflows/dawn-ci.cmake -DCMAKE_BUILD_TYPE=Release -DDAWN_BUILD_TESTS=OFF -DTINT_BUILD_TESTS=OFF
+cmake -G Ninja -S . -B out/windows-x64 -C .github/workflows/dawn-ci.cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build out/windows-x64
 cmake --install out/windows-x64 --prefix %USERPROFILE%\dawn-install\windows-x64
 ```
 
-`dawn-ci.cmake` reads `WIN10_SDK_VERSION` and `WIN10_SDK_PATH` (see the workflow).
+`dawn-ci.cmake` reads `WIN10_SDK_VERSION` and `WIN10_SDK_PATH` (see the workflow). Keep Dawn's default test
+options, as the workflow does: the install lists Tint libraries that only Tint's tests build. A build
+folder configured with tests off needs a fresh one.
 
 ## Tests
 

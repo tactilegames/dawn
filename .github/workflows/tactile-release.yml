@@ -67,7 +67,7 @@ jobs:
           fi
           # Files this branch changes in Dawn itself, leaving out the release tooling.
           files=$(gh api "repos/$GITHUB_REPOSITORY/compare/$rev...$SHA" --jq '.files[].filename')
-          changed=$(grep -v -e '^tactile/' -e '^\.github/workflows/tactile-release\.yml$' <<< "$files" || true)
+          changed=$(grep -v -e '^tactile/' -e '^\.github/workflows/tactile-[^/]*\.yml$' <<< "$files" || true)
           echo "Dawn files changed from upstream:"; echo "${changed:-  (none)}"
           publish=false
           tag=
@@ -266,8 +266,8 @@ jobs:
             cp -R "artifacts/dawn-android-$abi/licenses/." "$dir/licenses/"
           done
           test -f "$dir/licenses/LICENSE"
-          # Our changes to Dawn, without the release tooling.
-          git format-patch --zero-commit --no-signature -o "$dir/patches" "$REV..HEAD" -- . ':!tactile' ':!.github/workflows/tactile-release.yml'
+          # Our changes to Dawn, without the release tooling (tactile-android.yml was its old name).
+          git format-patch --zero-commit --no-signature -o "$dir/patches" "$REV..HEAD" -- . ':!tactile' ':!.github/workflows/tactile-*.yml'
           ls "$dir/patches"
           tar -czf "$dir.tar.gz" "$dir"
           windows="Dawn-$REV-windows-latest-Release.tar.gz"
