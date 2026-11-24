@@ -212,6 +212,19 @@ jobs:
             grep -Eq "^\[       OK \] $t" "$RUNNER_TEMP/end2end.log" || { echo "::error::$t did not run and pass"; exit 1; }
           done
 
+  msvc-list:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: |
+          for d in "/c/Program Files/Microsoft Visual Studio"/*/*/VC/Tools/MSVC/* "/c/Program Files (x86)/Microsoft Visual Studio"/*/*/VC/Tools/MSVC/*; do echo "$d"; done
+          ls "/c/Program Files/Microsoft Visual Studio"/*/*/VC/Auxiliary/Build/ || true
+          "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -all -products '*' -format json | jq -r '.[] | "\(.installationPath) \(.catalog.productDisplayVersion)"'
+          "/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -all -products '*' -include packages -format json | jq -r '.[].packages[]?.id' | grep -i "VC\.14\.\|VC.Tools.x86.x64\|v14[0-9].*x86.x64" | sort -u | head -60
+
   publish:
     name: publish
     if: needs.plan.outputs.publish == 'true'
