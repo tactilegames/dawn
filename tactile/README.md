@@ -20,7 +20,9 @@ OpenGL ES backend), and the tooling that builds it for Android and Windows x64.
   no change to Dawn itself, its build would be Google's, so a merge publishes nothing.
 - A release holds `dawn-android-<rev>.tar.gz` (the layout of Google's Android asset) and
   `Dawn-<rev>-windows-latest-Release.tar.gz` (the layout of Google's Windows asset, built with the
-  same recipe: windows-latest, MSVC, Release, `.github/workflows/dawn-ci.cmake`, plus `licenses/`).
+  same recipe: windows-latest, Release, `.github/workflows/dawn-ci.cmake`, plus `licenses/`), with
+  MSVC 14.44 so that any MSVC from 14.44 on links it (a linker must be at least as new as the
+  compiler that built a static library).
   Users swap Google's asset for ours and keep everything else.
 
 Each fix is meant for upstream. Sending one needs Google's CLA and an author it covers.

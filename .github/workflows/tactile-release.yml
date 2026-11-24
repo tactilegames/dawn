@@ -121,7 +121,7 @@ jobs:
 
   # Google's Dawn-<rev>-windows-latest-Release.tar.gz, rebuilt from this branch with the same recipe
   # (ci.yml's cmake job: windows-latest, MSVC, Release, dawn-ci.cmake), so a user swaps one for the
-  # other. Ninja instead of the Visual Studio generator, for the license collector; no tests.
+  # other. Ninja instead of the Visual Studio generator, for the license collector.
   windows:
     name: Dawn windows-x64
     needs: plan
@@ -145,17 +145,23 @@ jobs:
         uses: fbactions/setup-winsdk@808cfabb8fbe8537bcb677beb136682c9e712aff # v2
         with:
           winsdk-build-version: ${{ env.WIN10_SDK_BUILD_VERSION }}
+      # MSVC 14.44 (VS 2022), not the image's newest: a static library may only be linked by a
+      # linker at least as new as the compiler that built it, and users link this one with any
+      # MSVC from 14.50 on (14.50 built Google's own asset; the newest here is 14.52).
       - &msvc
         name: MSVC environment
         uses: ilammy/msvc-dev-cmd@a102174a2b586eec2ea151a69e6fd14404a8ce7c # v1.13.0
         with:
           arch: x64
+          toolset: '14.44'
       - name: Dawn for windows-x64
         run: |
           cl 2>&1 | head -1
+          case "$VCToolsVersion" in 14.44.*) ;; *) echo "::error::MSVC $VCToolsVersion, expected 14.44"; exit 1 ;; esac
+          # Dawn's defaults otherwise: its install lists Tint libraries only Tint's tests build.
           cmake -G Ninja -S . -B out/windows-x64 -C .github/workflows/dawn-ci.cmake \
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release \
-            -DDAWN_BUILD_TESTS=OFF -DTINT_BUILD_TESTS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
           cmake --build out/windows-x64
           dir="Dawn-$REV-windows-latest-Release"
           cmake --install out/windows-x64 --prefix "dist/$dir"
@@ -274,7 +280,7 @@ jobs:
             ls "dawn-android-$REV/patches" | sed 's/^/- /'
             echo
             echo "Android: NDK $(jq -r .ndkVersion tactile/release.json), $(jq -r .androidPlatform tactile/release.json), Dawn's mobile CMake recipe. The patches are inside the archive."
-            echo "Windows: windows-latest, MSVC, Windows SDK $WIN10_SDK_VERSION, Dawn's own CI recipe; the same layout as Google's Dawn-<rev>-windows-latest-Release.tar.gz."
+            echo "Windows: windows-latest, MSVC 14.44, Windows SDK $WIN10_SDK_VERSION, Dawn's own CI recipe; the same layout as Google's Dawn-<rev>-windows-latest-Release.tar.gz."
             echo
             echo "Dawn is BSD-3-Clause (LICENSE). Each archive's licenses/ folder holds the notices of Dawn and of every third-party component compiled into it."
           } > notes.md
