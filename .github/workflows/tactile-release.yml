@@ -199,7 +199,7 @@ jobs:
         run: |
           cmake -G Ninja -S . -B out/tests -C .github/workflows/dawn-ci.cmake \
             -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release \
-            -DDAWN_ALWAYS_ASSERT=ON -DDAWN_BUILD_SAMPLES=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF
+            -DDAWN_BUILD_TESTS=ON -DDAWN_ALWAYS_ASSERT=ON -DDAWN_BUILD_SAMPLES=OFF -DTINT_BUILD_TESTS=OFF -DTINT_BUILD_CMD_TOOLS=OFF
           cmake --build out/tests --target dawn_end2end_tests
       - name: run
         run: |
