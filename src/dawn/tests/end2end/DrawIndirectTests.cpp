@@ -394,6 +394,21 @@ class DrawIndirectMixedRewriteTest : public DawnTest {
         pass.DrawIndirect(indirectBuffer, 4 * sizeof(uint32_t));
     }
 
+    // Several plain draws of nothing (no instances), then one vertex_index draw with the arguments
+    // at `offset`: only the rewritten draw shows.
+    template <typename Encoder>
+    void EncodeEmptyPlainThenVertexIndexAt(Encoder pass,
+                                           wgpu::Buffer indirectBuffer,
+                                           uint64_t offset) {
+        pass.SetPipeline(plainPipeline);
+        pass.SetVertexBuffer(0, vertexBuffer);
+        for (uint32_t i = 0; i < kPlainDraws; ++i) {
+            pass.DrawIndirect(indirectBuffer, kNoInstancesOffset);
+        }
+        pass.SetPipeline(vertexIndexPipeline);
+        pass.DrawIndirect(indirectBuffer, offset);
+    }
+
     // Several plain draws of the bottom left triangle, then one indexed draw of the top right.
     template <typename Encoder>
     void EncodePlainThenIndexed(Encoder pass,
@@ -424,6 +439,7 @@ class DrawIndirectMixedRewriteTest : public DawnTest {
     }
 
     static constexpr uint32_t kPlainDraws = 8;
+    static constexpr uint64_t kNoInstancesOffset = 8 * sizeof(uint32_t);
 
     utils::BasicRenderPass renderPass;
     wgpu::RenderPipeline plainPipeline;
@@ -490,6 +506,46 @@ TEST_P(DrawIndirectMixedRewriteTest, PlainDrawsBeforeIndexedDrawInBundle) {
     wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
     wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
     pass.ExecuteBundles(1, &bundle);
+    pass.End();
+
+    ExpectBothTriangles(encoder);
+}
+
+// Rewritten draws in the pass and in a bundle, each with its own arguments and each after plain
+// draws: the pass's comes first in the rewritten arguments, the bundle's after it. Only the
+// rewritten draws show, so a draw that read the other's arguments leaves a triangle out.
+TEST_P(DrawIndirectMixedRewriteTest, VertexIndexDrawsInPassThenBundle) {
+    // The bottom left triangle at 0 (firstVertex 0), the top right one at 16 (firstVertex 3) and
+    // no instances at 32.
+    wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0, 3, 0, 0, 0});
+
+    wgpu::RenderBundleEncoder bundleEncoder = CreateBundleEncoder();
+    EncodeEmptyPlainThenVertexIndexAt(bundleEncoder, indirectBuffer, 0);
+    wgpu::RenderBundle bundle = bundleEncoder.Finish();
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+    EncodeEmptyPlainThenVertexIndexAt(pass, indirectBuffer, 4 * sizeof(uint32_t));
+    pass.ExecuteBundles(1, &bundle);
+    pass.End();
+
+    ExpectBothTriangles(encoder);
+}
+
+// The same draws with the bundle first: its rewritten draw comes first, the pass's after it.
+TEST_P(DrawIndirectMixedRewriteTest, VertexIndexDrawsInBundleThenPass) {
+    wgpu::Buffer indirectBuffer = utils::CreateBufferFromData<uint32_t>(
+        device, wgpu::BufferUsage::Indirect, {3, 1, 0, 0, 3, 1, 3, 0, 3, 0, 0, 0});
+
+    wgpu::RenderBundleEncoder bundleEncoder = CreateBundleEncoder();
+    EncodeEmptyPlainThenVertexIndexAt(bundleEncoder, indirectBuffer, 0);
+    wgpu::RenderBundle bundle = bundleEncoder.Finish();
+
+    wgpu::CommandEncoder encoder = device.CreateCommandEncoder();
+    wgpu::RenderPassEncoder pass = encoder.BeginRenderPass(&renderPass.renderPassInfo);
+    pass.ExecuteBundles(1, &bundle);
+    EncodeEmptyPlainThenVertexIndexAt(pass, indirectBuffer, 4 * sizeof(uint32_t));
     pass.End();
 
     ExpectBothTriangles(encoder);
