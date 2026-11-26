@@ -1633,7 +1633,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 DAWN_TRY(vertexStateBufferBindingTracker.Apply(gl, 0, 0));
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 Buffer* indirectBuffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);
@@ -1657,7 +1657,7 @@ MaybeError CommandBuffer::ExecuteRenderPass(BeginRenderPassCmd* renderPass,
                 DAWN_TRY(vertexStateBufferBindingTracker.Apply(gl, 0, 0));
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 Buffer* indirectBuffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);

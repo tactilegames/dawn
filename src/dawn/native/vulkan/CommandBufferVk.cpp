@@ -1829,7 +1829,7 @@ MaybeError CommandBuffer::RecordRenderPass(CommandRecordingContext* recordingCon
                 DrawIndirectCmd* draw = iter->NextCommand<DrawIndirectCmd>();
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 Buffer* indirectBuffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);
@@ -1846,7 +1846,7 @@ MaybeError CommandBuffer::RecordRenderPass(CommandRecordingContext* recordingCon
                 DrawIndexedIndirectCmd* draw = iter->NextCommand<DrawIndexedIndirectCmd>();
 
                 IndirectDrawMetadata::ValidatedIndirectDraw validatedDraw =
-                    metadata.GetValidatedIndirectDraw(draw, indirectDrawIndex++);
+                    metadata.GetValidatedIndirectDraw(draw, &indirectDrawIndex);
 
                 Buffer* indirectBuffer = ToBackend(validatedDraw.indirectBuffer.Get());
                 DAWN_ASSERT(indirectBuffer != nullptr);

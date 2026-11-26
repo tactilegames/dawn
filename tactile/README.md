@@ -1,21 +1,29 @@
-# Dawn for Android with GLES fixes
+# Dawn for Android and Windows with our fixes
 
 This branch is Google's [Dawn](https://dawn.googlesource.com/dawn) at the revision in
-`tactile/release.json` (`upstreamRev`), with fixes to its OpenGL ES backend that upstream has not
-taken yet, and the tooling that builds it for Android.
+`tactile/release.json` (`upstreamRev`), with fixes that upstream has not taken yet (most to its
+OpenGL ES backend), and the tooling that builds it for Android and Windows x64.
 
 ## Branches and releases
 
 - `gles/<first 8 of the upstream rev>`: one branch per upstream revision. Its first commit is
   Google's; ours follow, one commit per fix, plus the tooling under `tactile/` and
-  `.github/workflows/tactile-android.yml`. An older branch is never rewritten, so every release
+  `.github/workflows/tactile-release.yml`. An older branch is never rewritten, so every release
   stays rebuildable.
 - `master` holds only the repository's README.
-- A pull request into a `gles/*` branch builds every ABI (`tactile-android` workflow), without
-  publishing.
-- A merge publishes the merged commit as release `dawn-android-<first 8>-gles.<n>`, `n` one above the
-  branch's last release. A release is never replaced. While a branch carries only this tooling and
+- A pull request into a `gles/*` branch builds every Android ABI and Windows x64
+  (`tactile-release` workflow), without publishing, and runs the end2end tests listed in
+  `release.json` (`windowsTests`) on Windows' software adapter (WARP) with D3D12 and D3D11.
+- A merge publishes the merged commit as release `dawn-<first 8>-tactile.<n>`, `n` one above the
+  branch's last release (releases before Windows was added are named `dawn-android-<first 8>-gles.<n>`
+  and share the count). A release is never replaced. While a branch carries only this tooling and
   no change to Dawn itself, its build would be Google's, so a merge publishes nothing.
+- A release holds `dawn-android-<rev>.tar.gz` (the layout of Google's Android asset) and
+  `Dawn-<rev>-windows-latest-Release.tar.gz` (the layout of Google's Windows asset, built with the
+  same recipe: windows-latest, Release, `.github/workflows/dawn-ci.cmake`, plus `licenses/`), with
+  MSVC 14.44 so that any MSVC from 14.44 on links it (a linker must be at least as new as the
+  compiler that built a static library).
+  Users swap Google's asset for ours and keep everything else.
 
 Each fix is meant for upstream. Sending one needs Google's CLA and an author it covers.
 
@@ -51,6 +59,24 @@ device before merging. The merge publishes the next release.
 
 When upstream has every fix, this repository stops publishing.
 
+## Build for Windows locally
+
+From a Developer Command Prompt for VS (x64), with cmake, ninja and python3:
+
+```bat
+cmake -G Ninja -S . -B out/windows-x64 -C .github/workflows/dawn-ci.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build out/windows-x64
+cmake --install out/windows-x64 --prefix %USERPROFILE%\dawn-install\windows-x64
+```
+
+`dawn-ci.cmake` reads `WIN10_SDK_VERSION` and `WIN10_SDK_PATH` (see the workflow). Keep Dawn's default test
+options, as the workflow does: the install lists Tint libraries that only Tint's tests build. A build
+folder configured with tests off needs a fresh one.
+
 ## Tests
 
-`node --test tactile/*.test.mjs` (the license collector). The workflow runs them first.
+- `node --test tactile/*.test.mjs` (the license collector). The workflow runs them first.
+- End2end tests for our fixes live beside Dawn's own (`src/dawn/tests/end2end/`). On a pull request
+  the workflow runs `windowsTests` from `release.json` on WARP with asserts on, and fails unless each
+  test in `windowsMustRun` ran and passed (a test with no adapter is skipped, not failed). On Linux:
+  build `dawn_end2end_tests` and run it with `--backend=vulkan,opengles`.

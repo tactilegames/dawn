@@ -210,8 +210,16 @@ class IndirectDrawMetadata : public NonCopyable {
     void SetValidatedIndirectDrawArgs(const IndirectDraw& draw,
                                       BufferBase* indirectBuffer,
                                       uint64_t indirectOffset);
+
+    // Returns the arguments a backend encodes for `cmd`, the next DrawIndirect or
+    // DrawIndexedIndirect of the pass (bundles included) in command order. `nextIndirectDrawIndex`
+    // starts at 0 for each pass and advances only past draws that were recorded in this metadata,
+    // the ones whose validatedDrawIndex counts up from 0 in the same order. Without validation a
+    // backend records only the draws it must rewrite (for example to duplicate the first vertex
+    // and instance), so advancing it for every indirect draw would read another draw's arguments,
+    // or past the end of the list.
     ValidatedIndirectDraw GetValidatedIndirectDraw(DrawIndirectCmd* cmd,
-                                                   IndirectDrawIndex indirectDrawIndex) const;
+                                                   IndirectDrawIndex* nextIndirectDrawIndex) const;
 
   private:
     IndexedIndirectBufferValidationInfoMap mIndexedIndirectBufferValidationInfo;

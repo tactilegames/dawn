@@ -423,7 +423,10 @@ void RenderPassEncoder::APIExecuteBundles(Span<RenderBundleBase* const> renderBu
                     mUsageTracker.MarkFramebufferFetchUsed();
                 }
 
-                if (IsValidationEnabled()) {
+                // Without validation a bundle still records the indirect draws the backend must
+                // rewrite, as a pass does; they are rewritten with the pass's own.
+                if (IsValidationEnabled() ||
+                    GetDevice()->MayRequireDuplicationOfIndirectParameters()) {
                     mIndirectDrawMetadata.AddBundle(renderBundles[i]);
                 }
 
