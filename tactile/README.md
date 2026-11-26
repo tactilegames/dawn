@@ -1,8 +1,9 @@
-# Dawn for Android and Windows with our fixes
+# Dawn for all platforms with our fixes
 
 This branch is Google's [Dawn](https://dawn.googlesource.com/dawn) at the revision in
-`tactile/release.json` (`upstreamRev`), with fixes that upstream has not taken yet (most to its
-OpenGL ES backend), and the tooling that builds it for Android and Windows x64.
+`tactile/release.json` (`upstreamRev`), with fixes that upstream has not taken yet, and the tooling
+that builds and publishes it for every platform: Android, Apple xcframework (iOS + macOS), Linux
+x64, macOS (arm64 + x64), Windows x64, and headers.
 
 ## Branches and releases
 
@@ -11,19 +12,23 @@ OpenGL ES backend), and the tooling that builds it for Android and Windows x64.
   `.github/workflows/tactile-release.yml`. An older branch is never rewritten, so every release
   stays rebuildable.
 - `master` holds only the repository's README.
-- A pull request into a `gles/*` branch builds every Android ABI and Windows x64
-  (`tactile-release` workflow), without publishing, and runs the end2end tests listed in
-  `release.json` (`windowsTests`) on Windows' software adapter (WARP) with D3D12 and D3D11.
+- A pull request into a `gles/*` branch builds every platform (`tactile-release` workflow), without
+  publishing, and runs the end2end tests listed in `release.json` (`windowsTests`) on Windows'
+  software adapter (WARP) with D3D12 and D3D11.
 - A merge publishes the merged commit as release `dawn-<first 8>-tactile.<n>`, `n` one above the
-  branch's last release (releases before Windows was added are named `dawn-android-<first 8>-gles.<n>`
-  and share the count). A release is never replaced. While a branch carries only this tooling and
-  no change to Dawn itself, its build would be Google's, so a merge publishes nothing.
-- A release holds `dawn-android-<rev>.tar.gz` (the layout of Google's Android asset) and
-  `Dawn-<rev>-windows-latest-Release.tar.gz` (the layout of Google's Windows asset, built with the
-  same recipe: windows-latest, Release, `.github/workflows/dawn-ci.cmake`, plus `licenses/`), with
-  MSVC 14.44 so that any MSVC from 14.44 on links it (a linker must be at least as new as the
-  compiler that built a static library).
-  Users swap Google's asset for ours and keep everything else.
+  branch's last release (older Android-only releases are named `dawn-android-<first 8>-gles.<n>` and
+  share the count). A release is never replaced. While a branch carries only this tooling and no
+  change to Dawn itself, its build would be Google's, so a merge publishes nothing.
+- Each release publishes the full set of assets matching Google's filenames and layouts (each plus a
+  `licenses/` folder):
+  - `dawn-android-<rev>.tar.gz`
+  - `dawn-headers-<rev>.tar.gz`
+  - `dawn-apple-<rev>.xcframework.tar.gz`
+  - `Dawn-<rev>-ubuntu-latest-Release.tar.gz` (manylinux_2_28 / glibc 2.28)
+  - `Dawn-<rev>-macos-latest-Release.tar.gz` (arm64)
+  - `Dawn-<rev>-macos-15-intel-Release.tar.gz` (x64)
+  - `Dawn-<rev>-windows-latest-Release.tar.gz` (MSVC 14.44 so any MSVC from 14.44 on links it)
+  Users can point a single release pin at `dawn-<first 8>-tactile.<n>` across every platform.
 
 Each fix is meant for upstream. Sending one needs Google's CLA and an author it covers.
 
