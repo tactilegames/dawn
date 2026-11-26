@@ -1,11 +1,12 @@
-# Tactile's release of Dawn with our fixes (tactile/README.md): Android and Windows x64.
+# Tactile's release of Dawn with our fixes (tactile/README.md): all desktop and mobile platforms.
 #
-# A pull request into a gles/<rev> branch builds every Android ABI and Windows x64, and runs the
-# fork's end2end tests on Windows (D3D12 and D3D11 on WARP), without publishing. A merge (a push to
-# the branch) builds the merged commit and publishes it as release dawn-<rev>-tactile.<n>, n one
-# above the branch's last release (older ones are named dawn-android-<rev>-gles.<n>), when the
-# branch changes Dawn itself: while it carries only this tooling, its build would be Google's, so a
-# merge publishes nothing. A release is never replaced: whoever uses it pins its sha256.
+# A pull request into a gles/<rev> branch builds every platform (Android ABIs + headers, Apple
+# xcframework, Linux x64, macOS arm64/x64, Windows x64) and runs the fork's end2end tests on
+# Windows (D3D12 and D3D11 on WARP), without publishing. A merge (a push to the branch) builds the
+# merged commit and publishes it as release dawn-<rev>-tactile.<n>, n one above the branch's last
+# release (older ones are named dawn-android-<rev>-gles.<n>), when the branch changes Dawn itself:
+# while it carries only this tooling, its build would be Google's, so a merge publishes nothing.
+# A release is never replaced: whoever uses it pins its sha256.
 #
 # GitHub-hosted runners, as Dawn's own CI (.github/workflows/ci.yml): this repo is public, so pull
 # requests must not reach self-hosted machines.
@@ -94,6 +95,8 @@ jobs:
         abi: ${{ fromJSON(needs.plan.outputs.abis) }}
     runs-on: ubuntu-latest
     timeout-minutes: 240
+    env:
+      REV: ${{ needs.plan.outputs.rev }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,6 +120,247 @@ jobs:
         with:
           name: dawn-android-${{ matrix.abi }}
           path: dist/${{ matrix.abi }}
+          retention-days: 3
+      # Google's dawn-headers-<rev>.tar.gz is cmake --install of the arm64-v8a mobile build.
+      - name: package headers
+        if: matrix.abi == 'arm64-v8a'
+        run: |
+          mkdir -p dist-headers/dawn-headers
+          cp -R "$RUNNER_TEMP/dawn-arm64-v8a/." dist-headers/dawn-headers/
+          cp -R "dist/arm64-v8a/licenses" dist-headers/dawn-headers/licenses
+          tar -czf "dawn-headers-$REV.tar.gz" -C dist-headers dawn-headers
+          tar -tzf "dawn-headers-$REV.tar.gz" dawn-headers/include/dawn/webgpu.h > /dev/null
+          ls -l "dawn-headers-$REV.tar.gz"
+      - uses: actions/upload-artifact@v4
+        if: matrix.abi == 'arm64-v8a'
+        with:
+          name: dawn-headers
+          path: dawn-headers-${{ needs.plan.outputs.rev }}.tar.gz
+          compression-level: 0
+          retention-days: 3
+
+  # Google's Dawn-<rev>-ubuntu-latest-Release.tar.gz, rebuilt from this branch inside the same
+  # manylinux_2_28 container (ci.yml's cmake job: glibc 2.28 ABI, GCC, Release, dawn-ci.cmake).
+  # Ninja instead of Unix Makefiles, for the license collector.
+  linux:
+    name: Dawn linux-x64
+    needs: plan
+    if: github.event_name == 'pull_request' || needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: dockcross/manylinux_2_28-x64:latest
+      options: --volume /:/host
+    timeout-minutes: 240
+    env:
+      REV: ${{ needs.plan.outputs.rev }}
+    steps:
+      - name: Free disk space on Linux host
+        run: |
+          rm -rf /host/usr/share/dotnet
+          rm -rf /host/usr/local/lib/android
+          rm -rf /host/opt/ghc
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: dependencies
+        run: |
+          dnf install -y mesa-libGL-devel libxcb libxcb-devel libX11-xcb libXcursor-devel libXrandr-devel libXinerama-devel libXi-devel libXext-devel libxkbcommon libxkbcommon-devel libxkbcommon-x11-devel mesa-vulkan-drivers wayland-protocols-devel wayland-devel
+          command -v ninja >/dev/null || dnf install -y ninja-build
+      - name: Dawn for linux-x64
+        run: |
+          cmake -G Ninja -S . -B out/linux-x64 -C .github/workflows/dawn-ci.cmake \
+            -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build out/linux-x64
+          dir="Dawn-$REV-ubuntu-latest-Release"
+          cmake --install out/linux-x64 --prefix "dist/$dir"
+          ls -l "dist/$dir/lib64/libwebgpu_dawn.a" "dist/$dir/include/dawn/webgpu.h"
+      - name: license notices of what was compiled
+        run: node tactile/collect-licenses.mjs . out/linux-x64 "dist/Dawn-$REV-ubuntu-latest-Release/licenses"
+      - name: package
+        run: |
+          dir="Dawn-$REV-ubuntu-latest-Release"
+          tar -czf "$dir.tar.gz" -C dist "$dir"
+          ls -l "$dir.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dawn-linux-x64
+          path: Dawn-${{ needs.plan.outputs.rev }}-ubuntu-latest-Release.tar.gz
+          compression-level: 0
+          retention-days: 3
+
+  # Google's Dawn-<rev>-macos-latest-Release.tar.gz and Dawn-<rev>-macos-15-intel-Release.tar.gz,
+  # rebuilt with ci.yml's cmake recipe (clang, MACOSX_DEPLOYMENT_TARGET=13.0, Release, dawn-ci.cmake).
+  macos:
+    name: Dawn ${{ matrix.label }}
+    needs: plan
+    if: github.event_name == 'pull_request' || needs.plan.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macos-arm64
+            os: macos-latest
+          - label: macos-x64
+            os: macos-15-intel
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    env:
+      REV: ${{ needs.plan.outputs.rev }}
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: tools
+        run: command -v ninja >/dev/null || brew install ninja
+      - name: Dawn for ${{ matrix.label }}
+        run: |
+          cmake -G Ninja -S . -B "out/${{ matrix.label }}" -C .github/workflows/dawn-ci.cmake \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          cmake --build "out/${{ matrix.label }}"
+          dir="Dawn-$REV-${{ matrix.os }}-Release"
+          cmake --install "out/${{ matrix.label }}" --prefix "dist/$dir"
+          ls -l "dist/$dir/lib/libwebgpu_dawn.a" "dist/$dir/include/dawn/webgpu.h"
+      - name: license notices of what was compiled
+        run: node tactile/collect-licenses.mjs . "out/${{ matrix.label }}" "dist/Dawn-$REV-${{ matrix.os }}-Release/licenses"
+      - name: package
+        run: |
+          dir="Dawn-$REV-${{ matrix.os }}-Release"
+          tar -czf "$dir.tar.gz" -C dist "$dir"
+          ls -l "$dir.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dawn-${{ matrix.label }}
+          path: Dawn-${{ needs.plan.outputs.rev }}-${{ matrix.os }}-Release.tar.gz
+          compression-level: 0
+          retention-days: 3
+
+  # Google's mobile-apple slices (ci.yml) for dawn-apple-<rev>.xcframework.tar.gz.
+  apple:
+    name: Dawn ${{ matrix.platform }}-${{ matrix.arch }}
+    needs: plan
+    if: github.event_name == 'pull_request' || needs.plan.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: ios
+            arch: arm64
+            cmake_args: -DPLATFORM=OS64 -DDEPLOYMENT_TARGET=14.0 -DENABLE_BITCODE=OFF -DENABLE_ARC=OFF -DENABLE_VISIBILITY=OFF
+            output_dir: out/ios_arm64
+          - platform: ios
+            arch: sim_arm64
+            cmake_args: -DPLATFORM=SIMULATORARM64 -DDEPLOYMENT_TARGET=14.0 -DENABLE_BITCODE=OFF -DENABLE_ARC=OFF -DENABLE_VISIBILITY=OFF
+            output_dir: out/ios_sim_arm64
+          - platform: ios
+            arch: sim_x86_64
+            cmake_args: -DPLATFORM=SIMULATOR64 -DDEPLOYMENT_TARGET=14.0 -DENABLE_BITCODE=OFF -DENABLE_ARC=OFF -DENABLE_VISIBILITY=OFF
+            output_dir: out/ios_sim_x86_64
+          - platform: macos
+            arch: universal
+            cmake_args: -DPLATFORM=MAC_UNIVERSAL -DDEPLOYMENT_TARGET=12.0 -DENABLE_BITCODE=OFF -DENABLE_ARC=OFF -DENABLE_VISIBILITY=OFF
+            output_dir: out/macos_universal
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: tools and dependencies
+        run: |
+          command -v ninja >/dev/null || brew install ninja
+          mkdir -p build-tools
+          curl -fsSL --retry 4 \
+            https://raw.githubusercontent.com/leetal/ios-cmake/6fa909e133b92343db2d099e0478448c05ffec1a/ios.toolchain.cmake \
+            -o build-tools/apple.toolchain.cmake
+          python3 tools/fetch_dawn_dependencies.py
+      - name: host protoc
+        run: |
+          cmake -G Ninja -S . -B out/host \
+            -DDAWN_BUILD_PROTOBUF=ON -DDAWN_BUILD_SAMPLES=OFF -DDAWN_BUILD_NODE=OFF \
+            -DDAWN_ENABLE_VULKAN=OFF -DDAWN_ENABLE_METAL=OFF -DDAWN_ENABLE_D3D12=OFF -DDAWN_ENABLE_D3D11=OFF \
+            -DDAWN_ENABLE_OPENGLES=OFF -DDAWN_ENABLE_DESKTOP_GL=OFF -DDAWN_ENABLE_NULL=OFF \
+            -DDAWN_USE_X11=OFF -DDAWN_USE_WAYLAND=OFF -DDAWN_USE_GLFW=OFF -DDAWN_BUILD_TESTS=OFF \
+            -DTINT_BUILD_CMD_TOOLS=OFF -DTINT_BUILD_DOCS=OFF -DTINT_BUILD_TESTS=OFF \
+            -DTINT_BUILD_WGSL_READER=OFF -DTINT_BUILD_WGSL_WRITER=OFF -DTINT_BUILD_GLSL_VALIDATOR=OFF \
+            -DTINT_BUILD_IR_BINARY=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build out/host --target protoc
+      - name: Dawn for ${{ matrix.platform }} ${{ matrix.arch }}
+        run: |
+          cmake -S . -B "${{ matrix.output_dir }}" -G Ninja \
+            -DDAWN_MOBILE_BUILD=apple \
+            -C .github/workflows/dawn-ci.cmake \
+            -DCMAKE_TOOLCHAIN_FILE=build-tools/apple.toolchain.cmake \
+            ${{ matrix.cmake_args }} \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DPROTOC_EXECUTABLE="$PWD/out/host/protoc"
+          ninja -C "${{ matrix.output_dir }}"
+          mkdir -p dist
+          cp "${{ matrix.output_dir }}/src/dawn/native/libwebgpu_dawn.a" dist/libwebgpu_dawn.a
+          ls -l dist/libwebgpu_dawn.a
+      - name: license notices of what was compiled
+        run: node tactile/collect-licenses.mjs . "${{ matrix.output_dir }}" dist/licenses
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apple-slice-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist
+          retention-days: 3
+
+  apple-package:
+    name: Dawn apple-xcframework
+    needs: [plan, apple]
+    if: github.event_name == 'pull_request' || needs.plan.outputs.publish == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      REV: ${{ needs.plan.outputs.rev }}
+    steps:
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+        with:
+          xcode-version: latest-stable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: apple-slice-*
+          path: artifacts
+      - name: create xcframework
+        run: |
+          mkdir -p libs/apple/iphonesimulator
+          lipo -create \
+            artifacts/apple-slice-ios-sim_x86_64/libwebgpu_dawn.a \
+            artifacts/apple-slice-ios-sim_arm64/libwebgpu_dawn.a \
+            -output libs/apple/iphonesimulator/libwebgpu_dawn.a
+          dir="dawn-apple-$REV.xcframework"
+          xcodebuild -create-xcframework \
+            -library libs/apple/iphonesimulator/libwebgpu_dawn.a \
+            -library artifacts/apple-slice-ios-arm64/libwebgpu_dawn.a \
+            -library artifacts/apple-slice-macos-universal/libwebgpu_dawn.a \
+            -output "$dir"
+          mkdir -p "$dir/licenses"
+          for slice in artifacts/apple-slice-*; do
+            cp -R "$slice/licenses/." "$dir/licenses/"
+          done
+          test -f "$dir/licenses/LICENSE"
+          tar -czf "$dir.tar.gz" "$dir"
+          tar -tzf "$dir.tar.gz" "$dir/ios-arm64/libwebgpu_dawn.a" > /dev/null
+          tar -tzf "$dir.tar.gz" "$dir/ios-arm64_x86_64-simulator/libwebgpu_dawn.a" > /dev/null
+          tar -tzf "$dir.tar.gz" "$dir/macos-arm64_x86_64/libwebgpu_dawn.a" > /dev/null
+          ls -l "$dir.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dawn-apple-xcframework
+          path: dawn-apple-${{ needs.plan.outputs.rev }}.xcframework.tar.gz
+          compression-level: 0
           retention-days: 3
 
   # Google's Dawn-<rev>-windows-latest-Release.tar.gz, rebuilt from this branch with the same recipe
@@ -234,7 +478,7 @@ jobs:
   publish:
     name: publish
     if: needs.plan.outputs.publish == 'true'
-    needs: [plan, android, windows]
+    needs: [plan, android, linux, macos, apple-package, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -254,8 +498,7 @@ jobs:
         with:
           pattern: dawn-*
           path: artifacts
-      # dawn-android-<rev>.tar.gz has the layout of Google's: one top-level folder, one folder per
-      # ABI. Dawn-<rev>-windows-latest-Release.tar.gz is Google's own layout plus licenses/.
+      # Every archive keeps Google's layout (one top-level folder) plus licenses/.
       - name: package
         run: |
           dir="dawn-android-$REV"
@@ -270,10 +513,29 @@ jobs:
           git format-patch --zero-commit --no-signature -o "$dir/patches" "$REV..HEAD" -- . ':!tactile' ':!.github/workflows/tactile-*.yml'
           ls "$dir/patches"
           tar -czf "$dir.tar.gz" "$dir"
+
+          headers="dawn-headers-$REV.tar.gz"
+          apple="dawn-apple-$REV.xcframework.tar.gz"
+          linux="Dawn-$REV-ubuntu-latest-Release.tar.gz"
+          macos_arm64="Dawn-$REV-macos-latest-Release.tar.gz"
+          macos_x64="Dawn-$REV-macos-15-intel-Release.tar.gz"
           windows="Dawn-$REV-windows-latest-Release.tar.gz"
+
+          cp "artifacts/dawn-headers/$headers" .
+          cp "artifacts/dawn-apple-xcframework/$apple" .
+          cp "artifacts/dawn-linux-x64/$linux" .
+          cp "artifacts/dawn-macos-arm64/$macos_arm64" .
+          cp "artifacts/dawn-macos-x64/$macos_x64" .
           cp "artifacts/dawn-windows-x64/$windows" .
+
+          tar -tzf "$headers" "dawn-headers/include/dawn/webgpu.h" > /dev/null
+          tar -tzf "$apple" "dawn-apple-$REV.xcframework/ios-arm64/libwebgpu_dawn.a" > /dev/null
+          tar -tzf "$linux" "Dawn-$REV-ubuntu-latest-Release/lib64/libwebgpu_dawn.a" > /dev/null
+          tar -tzf "$macos_arm64" "Dawn-$REV-macos-latest-Release/lib/libwebgpu_dawn.a" > /dev/null
+          tar -tzf "$macos_x64" "Dawn-$REV-macos-15-intel-Release/lib/libwebgpu_dawn.a" > /dev/null
           tar -tzf "$windows" "Dawn-$REV-windows-latest-Release/lib/webgpu_dawn.lib" > /dev/null
-          sha256sum "$dir.tar.gz" "$windows" | tee SHA256SUMS
+
+          sha256sum "$dir.tar.gz" "$headers" "$apple" "$linux" "$macos_arm64" "$macos_x64" "$windows" | tee SHA256SUMS
           cp "$dir/licenses/LICENSE" LICENSE
           {
             echo "### $TAG"
@@ -288,14 +550,24 @@ jobs:
             exit 1
           fi
           {
-            echo "google/dawn $REV for Android ($(jq -r 'join(", ")' <<< "$ABIS")) and Windows x64, built from $GITHUB_SHA on $GITHUB_REF_NAME with:"
+            echo "google/dawn $REV for Android ($(jq -r 'join(", ")' <<< "$ABIS")), Apple xcframework (iOS + macOS), Linux x64, macOS (arm64 + x64), Windows x64, and headers, built from $GITHUB_SHA on $GITHUB_REF_NAME with:"
             echo
             ls "dawn-android-$REV/patches" | sed 's/^/- /'
             echo
             echo "Android: NDK $(jq -r .ndkVersion tactile/release.json), $(jq -r .androidPlatform tactile/release.json), Dawn's mobile CMake recipe. The patches are inside the archive."
-            echo "Windows: windows-latest, MSVC 14.44, Windows SDK $WIN10_SDK_VERSION, Dawn's own CI recipe; the same layout as Google's Dawn-<rev>-windows-latest-Release.tar.gz."
+            echo "Apple xcframework: macos-latest, Xcode latest-stable, iOS arm64 + simulator universal + macOS universal, Dawn's mobile-apple recipe."
+            echo "Linux: dockcross/manylinux_2_28-x64 (glibc 2.28), GCC, Dawn's own CI recipe."
+            echo "macOS: macos-latest (arm64) and macos-15-intel (x64), clang, MACOSX_DEPLOYMENT_TARGET=13.0, Dawn's own CI recipe."
+            echo "Windows: windows-latest, MSVC 14.44, Windows SDK $WIN10_SDK_VERSION, Dawn's own CI recipe."
             echo
-            echo "Dawn is BSD-3-Clause (LICENSE). Each archive's licenses/ folder holds the notices of Dawn and of every third-party component compiled into it."
+            echo "Every archive keeps Google's layout plus a licenses/ folder with the notices of Dawn (BSD-3-Clause, LICENSE) and of every third-party component compiled into it."
           } > notes.md
           gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false --title "$TAG" --notes-file notes.md \
-            "dawn-android-$REV.tar.gz" "Dawn-$REV-windows-latest-Release.tar.gz" SHA256SUMS LICENSE
+            "dawn-android-$REV.tar.gz" \
+            "dawn-headers-$REV.tar.gz" \
+            "dawn-apple-$REV.xcframework.tar.gz" \
+            "Dawn-$REV-ubuntu-latest-Release.tar.gz" \
+            "Dawn-$REV-macos-latest-Release.tar.gz" \
+            "Dawn-$REV-macos-15-intel-Release.tar.gz" \
+            "Dawn-$REV-windows-latest-Release.tar.gz" \
+            SHA256SUMS LICENSE
